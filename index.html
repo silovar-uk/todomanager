@@ -1,0 +1,1391 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Plus, Check, X, Trash2, BarChart3, Target, ChevronDown, ChevronRight, Download, Upload } from 'lucide-react';
+
+export default function TodoApp() {
+  const colors = ['#3B82F6', '#EF4444', '#FBBF24'];
+  
+  const [tasks, setTasks] = useState([]);
+  const [expandedTasks, setExpandedTasks] = useState(new Set());
+  const [showAddForm, setShowAddForm] = useState(null);
+  const [showImportArea, setShowImportArea] = useState(false);
+  const [notification, setNotification] = useState('');
+  const [editingTask, setEditingTask] = useState(null);
+  const [showColorPicker, setShowColorPicker] = useState(null);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [isEmptyAreaSelected, setIsEmptyAreaSelected] = useState(false);
+  const [newTaskColor, setNewTaskColor] = useState(colors[0]);
+  const [showNewTaskColorPicker, setShowNewTaskColorPicker] = useState(false);
+  const [exportedData, setExportedData] = useState('');
+  const [showExportedData, setShowExportedData] = useState(false);
+  const [selectedColorIndex, setSelectedColorIndex] = useState(0);
+  const [showExportOptions, setShowExportOptions] = useState(false);
+  
+  const mainInputRef = useRef(null);
+  const subtaskInputRefs = useRef({});
+  const editInputRefs = useRef({});
+  
+  const showNotification = (message) => {
+    setNotification(message);
+    setTimeout(() => setNotification(''), 3000);
+  };
+
+  const generateId = () => Math.random().toString(36).substr(2, 9);
+
+  const hexToRgb = (hex) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  const getTaskBackgroundColor = (color, level) => {
+    const rgb = hexToRgb(color);
+    if (!rgb) return 'rgba(255, 255, 255, 1)';
+    const baseOpacity = 0.1;
+    const levelOpacity = Math.min(baseOpacity + (level * 0.08), 0.6);
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${levelOpacity})`;
+  };
+
+  const getTaskBorderColor = (color, level) => {
+    const rgb = hexToRgb(color);
+    if (!rgb) return 'rgba(200, 200, 200, 0.3)';
+    const borderOpacity = Math.min(0.2 + (level * 0.1), 0.8);
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${borderOpacity})`;
+  };
+
+  const formatDateTime = (date) => {
+    if (!date) return '';
+    try {
+      const d = new Date(date);
+      if (isNaN(d.getTime())) return '';
+      const month = d.getMonth() + 1;
+      const day = d.getDate();
+      const hours = d.getHours();
+      const minutes = d.getMinutes().toString().padStart(2, '0');
+      return `${month}/${day} ${hours}:${minutes}`;
+    } catch (error) {
+      return '';
+    }
+  };
+
+  const calculateTimeDifference = (startDate, endDate) => {
+    if (!startDate || !endDate) return '';
+    try {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      const diffMs = Math.abs(end - start);
+      
+      const diffMinutes = Math.floor(diffMs / (1000 * 60));
+      const diffHours = Math.floor(diffMinutes / 60);
+      const diffDays = Math.floor(diffHours / 24);
+      
+      if (diffDays > 0) {
+        return `${diffDays}日${diffHours % 24}時間`;
+      } else if (diffHours > 0) {
+        return `${diffHours}時間${diffMinutes % 60}分`;
+      } else if (diffMinutes > 0) {
+        return `${diffMinutes}分`;
+      } else {
+        return '1分未満';
+      }
+    } catch (error) {
+      return '';
+    }
+  };
+
+  const getAllTasksFlat = () => {
+    const flatTasks = [];
+    const flatten = (taskList) => {
+      taskList.forEach(task => {
+        flatTasks.push(task);
+        if (task.subtasks && task.subtasks.length > 0 && expandedTasks.has(task.id)) {
+          flatten(task.subtasks);
+        }
+      });
+    };
+    flatten(tasks);
+    return flatTasks;
+  };
+
+  const moveTaskDown = (taskId) => {
+    const findAndMoveTask = (taskList) => {
+      for (let i = 0; i < taskList.length; i++) {
+        const task = taskList[i];
+        
+        if (task.id === taskId) {
+          if (i > 0) {
+            const prevSibling = taskList[i - 1];
+            const taskToMove = { ...task };
+            
+            const newTaskList = [...taskList];
+            newTaskList.splice(i, 1);
+            
+            const updatedPrevSibling = {
+              ...prevSibling,
+              subtasks: [...(prevSibling.subtasks || []), taskToMove]
+            };
+            newTaskList[i - 1] = updatedPrevSibling;
+            
+            setExpandedTasks(prev => new Set([...prev, prevSibling.id]));
+            showNotification('📥 階層を下げました');
+            return newTaskList;
+          }
+          return taskList;
+        }
+        
+        if (task.subtasks && task.subtasks.length > 0) {
+          const updatedSubtasks = findAndMoveTask(task.subtasks);
+          if (updatedSubtasks !== task.subtasks) {
+            return taskList.map(t => 
+              t.id === task.id ? { ...t, subtasks: updatedSubtasks } : t
+            );
+          }
+        }
+      }
+      return taskList;
+    };
+
+    setTasks(prev => findAndMoveTask(prev));
+  };
+
+  const moveTaskUp = (taskId) => {
+    let taskMoved = false;
+    
+    const processTaskList = (taskList, parentList = null, parentIndex = -1) => {
+      for (let i = 0; i < taskList.length; i++) {
+        const task = taskList[i];
+        
+        if (task.id === taskId) {
+          if (!parentList) {
+            showNotification('⚠️ これ以上階層を上げることはできません');
+            return taskList;
+          }
+          
+          const newTaskList = [...taskList];
+          const taskToMove = newTaskList.splice(i, 1)[0];
+          
+          parentList.splice(parentIndex + 1, 0, taskToMove);
+          taskMoved = true;
+          showNotification('📤 階層を上げました');
+          
+          return newTaskList;
+        }
+        
+        if (task.subtasks && task.subtasks.length > 0) {
+          const updatedSubtasks = processTaskList(task.subtasks, taskList, i);
+          if (taskMoved) {
+            return taskList.map(t => 
+              t.id === task.id ? { ...t, subtasks: updatedSubtasks } : t
+            );
+          }
+        }
+      }
+      return taskList;
+    };
+
+    setTasks(prev => processTaskList(prev));
+  };
+
+  const moveTaskVertically = (taskId, direction) => {
+    const moveInList = (taskList) => {
+      const taskIndex = taskList.findIndex(t => t.id === taskId);
+      if (taskIndex === -1) {
+        for (let i = 0; i < taskList.length; i++) {
+          const task = taskList[i];
+          if (task.subtasks && task.subtasks.length > 0) {
+            const updatedSubtasks = moveInList(task.subtasks);
+            if (updatedSubtasks !== task.subtasks) {
+              return taskList.map(t => 
+                t.id === task.id ? { ...t, subtasks: updatedSubtasks } : t
+              );
+            }
+          }
+        }
+        return taskList;
+      }
+
+      const newList = [...taskList];
+      const task = newList[taskIndex];
+
+      if (direction === 'up' && taskIndex > 0) {
+        newList.splice(taskIndex, 1);
+        newList.splice(taskIndex - 1, 0, task);
+        showNotification('⬆️ タスクを上に移動しました');
+      } else if (direction === 'down' && taskIndex < newList.length - 1) {
+        newList.splice(taskIndex, 1);
+        newList.splice(taskIndex + 1, 0, task);
+        showNotification('⬇️ タスクを下に移動しました');
+      }
+
+      return newList;
+    };
+
+    setTasks(prev => moveInList(prev));
+    
+    setTimeout(() => {
+      const movedElement = document.querySelector(`[data-task-id="${taskId}"]`);
+      if (movedElement) {
+        movedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 50);
+  };
+
+  const moveSelection = (direction) => {
+    const flatTasks = getAllTasksFlat();
+    
+    if (direction === 'down') {
+      if (!selectedTaskId && !isEmptyAreaSelected) {
+        if (flatTasks.length > 0) {
+          setSelectedTaskId(flatTasks[0].id);
+          setIsEmptyAreaSelected(false);
+        } else {
+          setIsEmptyAreaSelected(true);
+        }
+        return;
+      }
+      
+      if (isEmptyAreaSelected) {
+        if (flatTasks.length > 0) {
+          setSelectedTaskId(flatTasks[0].id);
+          setIsEmptyAreaSelected(false);
+        }
+        return;
+      }
+      
+      if (selectedTaskId) {
+        const currentIndex = flatTasks.findIndex(task => task.id === selectedTaskId);
+        if (currentIndex < flatTasks.length - 1) {
+          setSelectedTaskId(flatTasks[currentIndex + 1].id);
+        } else {
+          setSelectedTaskId(null);
+          setIsEmptyAreaSelected(true);
+        }
+      }
+    } else {
+      if (isEmptyAreaSelected) {
+        if (flatTasks.length > 0) {
+          setSelectedTaskId(flatTasks[flatTasks.length - 1].id);
+          setIsEmptyAreaSelected(false);
+        }
+        return;
+      }
+      
+      if (!selectedTaskId) {
+        setIsEmptyAreaSelected(true);
+        return;
+      }
+      
+      if (selectedTaskId) {
+        const currentIndex = flatTasks.findIndex(task => task.id === selectedTaskId);
+        if (currentIndex > 0) {
+          setSelectedTaskId(flatTasks[currentIndex - 1].id);
+        } else {
+          setSelectedTaskId(null);
+          setIsEmptyAreaSelected(true);
+        }
+      }
+    }
+    
+    setTimeout(() => {
+      if (selectedTaskId) {
+        const selectedElement = document.querySelector(`[data-task-id="${selectedTaskId}"]`);
+        if (selectedElement) {
+          selectedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      } else if (isEmptyAreaSelected) {
+        const emptyArea = document.querySelector('[data-empty-area="true"]');
+        if (emptyArea) {
+          emptyArea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    }, 50);
+  };
+
+  const exportData = (format = 'json') => {
+    if (format === 'json') {
+      const data = JSON.stringify({ tasks, expandedTasks: Array.from(expandedTasks) }, null, 2);
+      setExportedData(data);
+      setShowExportedData(true);
+      navigator.clipboard.writeText(data).then(() => {
+        showNotification('📤 JSON形式でエクスポート完了！');
+      });
+    } else if (format === 'text') {
+      const convertTasksToText = (taskList, level = 0) => {
+        let text = '';
+        taskList.forEach(task => {
+          const indent = level === 0 ? '' : '　└';
+          const prefix = level > 1 ? '　'.repeat(level - 1) + '└' : indent;
+          text += `${prefix}${task.title}\n`;
+          
+          if (task.subtasks && task.subtasks.length > 0) {
+            text += convertTasksToText(task.subtasks, level + 1);
+          }
+        });
+        return text;
+      };
+      
+      const textData = convertTasksToText(tasks);
+      setExportedData(textData);
+      setShowExportedData(true);
+      navigator.clipboard.writeText(textData).then(() => {
+        showNotification('📤 テキスト形式でエクスポート完了！');
+      });
+    }
+    setShowExportOptions(false);
+  };
+
+  const importData = (text) => {
+    const trimmedText = text.trim();
+    
+    if (trimmedText.startsWith('{') || trimmedText.startsWith('[')) {
+      try {
+        const importedData = JSON.parse(trimmedText);
+        if (importedData.tasks) {
+          setTasks(importedData.tasks);
+          if (importedData.expandedTasks) {
+            setExpandedTasks(new Set(importedData.expandedTasks));
+          }
+          showNotification('📥 JSONデータを復元しました');
+        } else {
+          setTasks(importedData);
+          showNotification('📥 JSONデータを復元しました');
+        }
+      } catch (error) {
+        showNotification('❌ 無効なJSONデータです');
+      }
+    } else {
+      try {
+        const lines = trimmedText.split('\n').filter(line => line.trim());
+        const newTasks = [];
+        const taskStack = [{ subtasks: newTasks, level: -1, id: null }];
+        
+        lines.forEach(line => {
+          const trimmedLine = line.trim();
+          if (!trimmedLine) return;
+          
+          let level = 0;
+          let taskTitle = trimmedLine;
+          
+          if (trimmedLine.startsWith('　└')) {
+            level = 1;
+            taskTitle = trimmedLine.substring(2).trim();
+          } else if (trimmedLine.startsWith('└')) {
+            level = 1;
+            taskTitle = trimmedLine.substring(1).trim();
+          }
+          
+          while (taskStack.length > level + 1) {
+            taskStack.pop();
+          }
+          
+          const newTask = {
+            id: generateId(),
+            title: taskTitle,
+            completed: false,
+            color: colors[0],
+            createdAt: new Date(),
+            completedAt: null,
+            subtasks: []
+          };
+          
+          const parent = taskStack[taskStack.length - 1];
+          parent.subtasks.push(newTask);
+          
+          taskStack.push(newTask);
+        });
+        
+        setTasks(newTasks);
+        showNotification(`📥 ${lines.length}個のタスクをインポートしました`);
+      } catch (error) {
+        showNotification('❌ テキストの解析に失敗しました');
+      }
+    }
+  };
+
+  const addTask = (parentId = null) => {
+    let title = '';
+    let taskColor = newTaskColor;
+    
+    if (parentId && parentId !== 'root') {
+      const inputRef = subtaskInputRefs.current[parentId];
+      if (inputRef) {
+        title = inputRef.value.trim();
+        if (!title) return;
+        inputRef.value = '';
+      }
+      
+      const findParentColor = (taskList) => {
+        for (let task of taskList) {
+          if (task.id === parentId) {
+            return task.color;
+          }
+          if (task.subtasks && task.subtasks.length > 0) {
+            const result = findParentColor(task.subtasks);
+            if (result) return result;
+          }
+        }
+        return newTaskColor;
+      };
+      taskColor = findParentColor(tasks);
+    } else {
+      if (mainInputRef.current) {
+        title = mainInputRef.current.value.trim();
+        if (!title) return;
+        mainInputRef.current.value = '';
+      }
+    }
+
+    const task = {
+      id: generateId(),
+      title: title,
+      completed: false,
+      color: taskColor,
+      createdAt: new Date(),
+      completedAt: null,
+      subtasks: []
+    };
+
+    if (parentId && parentId !== 'root') {
+      const addSubtaskRecursively = (taskList) => {
+        return taskList.map(t => {
+          if (t.id === parentId) {
+            const newTask = { ...t };
+            if (!newTask.subtasks) {
+              newTask.subtasks = [];
+            }
+            newTask.subtasks.push(task);
+            return newTask;
+          }
+          if (t.subtasks && t.subtasks.length > 0) {
+            return { ...t, subtasks: addSubtaskRecursively(t.subtasks) };
+          }
+          return t;
+        });
+      };
+      setTasks(prev => addSubtaskRecursively(prev));
+      setExpandedTasks(prev => new Set([...prev, parentId]));
+    } else {
+      setTasks(prev => [...prev, task]);
+    }
+
+    setSelectedTaskId(task.id);
+    setIsEmptyAreaSelected(false);
+    setShowAddForm(null);
+    showNotification('✨ タスクを追加しました');
+  };
+
+  const toggleComplete = (taskId) => {
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          const newCompleted = !task.completed;
+          
+          if (newCompleted && task.subtasks && task.subtasks.length > 0) {
+            const completeAllSubtasks = (subtaskList) => {
+              return subtaskList.map(subtask => {
+                const newSubtask = { ...subtask, completed: true, completedAt: new Date() };
+                if (subtask.subtasks && subtask.subtasks.length > 0) {
+                  newSubtask.subtasks = completeAllSubtasks(subtask.subtasks);
+                }
+                return newSubtask;
+              });
+            };
+            
+            showNotification('✅ タスクとサブタスクを完了しました');
+            
+            return {
+              ...task,
+              completed: true,
+              completedAt: new Date(),
+              subtasks: completeAllSubtasks(task.subtasks)
+            };
+          }
+          
+          if (newCompleted) {
+            showNotification('✅ タスクを完了しました');
+            return { ...task, completed: true, completedAt: new Date() };
+          } else {
+            showNotification('📝 未完了に戻しました');
+            return { ...task, completed: false, completedAt: null };
+          }
+        }
+        
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+    
+    setTasks(prev => updateTaskRecursively(prev));
+  };
+
+  const changeTaskColor = (taskId, newColor) => {
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          return { ...task, color: newColor };
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+
+    setTasks(prev => updateTaskRecursively(prev));
+    setShowColorPicker(null);
+    showNotification('🎨 色を変更しました');
+  };
+
+  const deleteTask = (taskId) => {
+    const deleteTaskRecursively = (taskList) => {
+      return taskList.filter(task => {
+        if (task.id === taskId) return false;
+        if (task.subtasks && task.subtasks.length > 0) {
+          task.subtasks = deleteTaskRecursively(task.subtasks);
+        }
+        return true;
+      });
+    };
+    setTasks(prev => deleteTaskRecursively(prev));
+    
+    if (selectedTaskId === taskId) {
+      setSelectedTaskId(null);
+    }
+    
+    showNotification('🗑️ タスクを削除しました');
+  };
+
+  const startEditTask = (taskId, currentTitle) => {
+    setEditingTask(taskId);
+    setTimeout(() => {
+      const editInput = editInputRefs.current[taskId];
+      if (editInput) {
+        editInput.value = currentTitle;
+        editInput.focus();
+        editInput.select();
+      }
+    }, 50);
+  };
+
+  const finishEditTask = (taskId) => {
+    const editInput = editInputRefs.current[taskId];
+    if (!editInput) return;
+
+    const newTitle = editInput.value.trim();
+    if (!newTitle) {
+      setEditingTask(null);
+      return;
+    }
+
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          return { ...task, title: newTitle };
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+
+    setTasks(prev => updateTaskRecursively(prev));
+    setEditingTask(null);
+    showNotification('✏️ 更新しました');
+  };
+
+  const toggleExpanded = (taskId) => {
+    setExpandedTasks(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(taskId)) {
+        newSet.delete(taskId);
+      } else {
+        newSet.add(taskId);
+      }
+      return newSet;
+    });
+  };
+
+  const calculateStats = () => {
+    const getAllTasks = (taskList) => {
+      let allTasks = [];
+      taskList.forEach(task => {
+        allTasks.push(task);
+        if (task.subtasks && task.subtasks.length > 0) {
+          allTasks = allTasks.concat(getAllTasks(task.subtasks));
+        }
+      });
+      return allTasks;
+    };
+
+    const allTasks = getAllTasks(tasks);
+    const completed = allTasks.filter(t => t.completed).length;
+    const total = allTasks.length;
+    const progress = total > 0 ? (completed / total) * 100 : 0;
+    return { completed, total, progress, inProgress: total - completed };
+  };
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      const isInInputField = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+
+      if (e.key === 'Escape') {
+        setShowColorPicker(null);
+        setShowNewTaskColorPicker(false);
+        setShowExportedData(false);
+        setShowExportOptions(false);
+        setEditingTask(null);
+        if (showAddForm) {
+          setShowAddForm(null);
+        }
+        setSelectedTaskId(null);
+        setIsEmptyAreaSelected(false);
+        return;
+      }
+
+      if (showColorPicker) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') {
+          setSelectedColorIndex(prev => {
+            const newIndex = prev > 0 ? prev - 1 : colors.length - 1;
+            return newIndex;
+          });
+        } else if (e.key === 'ArrowRight') {
+          setSelectedColorIndex(prev => {
+            const newIndex = prev < colors.length - 1 ? prev + 1 : 0;
+            return newIndex;
+          });
+        } else if (e.key === 'Enter') {
+          const taskId = showColorPicker;
+          const selectedColor = colors[selectedColorIndex];
+          changeTaskColor(taskId, selectedColor);
+        }
+        return;
+      }
+
+      if (!isInInputField) {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (e.key === 'ArrowUp') {
+            moveSelection('up');
+          } else {
+            moveSelection('down');
+          }
+        }
+        
+        if (selectedTaskId) {
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            if (e.shiftKey) {
+              moveTaskUp(selectedTaskId);
+            } else {
+              moveTaskDown(selectedTaskId);
+            }
+          } else if (e.shiftKey && e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault();
+            moveTaskVertically(selectedTaskId, e.key === 'ArrowUp' ? 'up' : 'down');
+          } else if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+            e.preventDefault();
+            e.stopPropagation();
+            const selectedTask = getAllTasksFlat().find(task => task.id === selectedTaskId);
+            if (selectedTask) {
+              const currentColorIndex = colors.indexOf(selectedTask.color);
+              const validColorIndex = currentColorIndex >= 0 ? currentColorIndex : 0;
+              setSelectedColorIndex(validColorIndex);
+              setShowColorPicker(selectedTaskId);
+              showNotification('🎨 色選択モードを開きました');
+            }
+          } else if (e.key === 'Enter' && e.ctrlKey) {
+            e.preventDefault();
+            toggleComplete(selectedTaskId);
+          } else if (e.key === 'Enter' && !e.ctrlKey) {
+            e.preventDefault();
+            setShowAddForm(selectedTaskId);
+            setTimeout(() => {
+              const inputRef = subtaskInputRefs.current[selectedTaskId];
+              if (inputRef) {
+                inputRef.focus();
+              }
+            }, 100);
+          } else if (e.key === ' ') {
+            e.preventDefault();
+            const selectedTask = getAllTasksFlat().find(task => task.id === selectedTaskId);
+            if (selectedTask) {
+              startEditTask(selectedTaskId, selectedTask.title);
+            }
+          } else if (e.key === 'Delete' || e.key === 'Backspace') {
+            e.preventDefault();
+            deleteTask(selectedTaskId);
+          }
+        }
+        
+        if (e.key === 'Enter' && !selectedTaskId && isEmptyAreaSelected) {
+          e.preventDefault();
+          setShowAddForm('root');
+          setTimeout(() => {
+            if (mainInputRef.current) {
+              mainInputRef.current.focus();
+            }
+          }, 100);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => document.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [showAddForm, selectedTaskId, isEmptyAreaSelected, showColorPicker, selectedColorIndex, colors, tasks, expandedTasks]);
+
+  const TaskCard = ({ task, level = 0 }) => {
+    const isExpanded = expandedTasks.has(task.id);
+    const hasSubtasks = task.subtasks && task.subtasks.length > 0;
+
+    return (
+      <div className="mb-2">
+        <div 
+          className={`rounded-lg border-2 transition-all duration-200 cursor-pointer hover:scale-[1.01] group ${
+            task.completed ? 'opacity-60 ' : ''
+          } ${
+            selectedTaskId === task.id
+              ? 'ring-4 ring-blue-400 ring-offset-2 shadow-lg border-blue-400 '
+              : 'border-gray-200 hover:border-gray-300 hover:shadow-md '
+          }`}
+          style={{ 
+            marginLeft: `${level * 24}px`,
+            backgroundColor: getTaskBackgroundColor(task.color, level),
+            borderLeftColor: level > 0 ? getTaskBorderColor(task.color, level) : undefined,
+            borderLeftWidth: level > 0 ? '4px' : undefined
+          }}
+          data-task-id={task.id}
+          onClick={() => {
+            setSelectedTaskId(selectedTaskId === task.id ? null : task.id);
+            setIsEmptyAreaSelected(false);
+          }}
+        >
+          <div className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3 flex-1">
+                <div className="flex items-center space-x-2">
+                  {hasSubtasks && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleExpanded(task.id);
+                      }}
+                      className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded hover:bg-gray-100"
+                    >
+                      {isExpanded ? 
+                        <ChevronDown size={18} className="text-blue-600" /> : 
+                        <ChevronRight size={18} />
+                      }
+                    </button>
+                  )}
+                  
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleComplete(task.id);
+                    }}
+                    className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-200 hover:scale-110 ${
+                      task.completed
+                        ? 'bg-green-500 border-green-500 text-white shadow-md'
+                        : 'border-gray-300 hover:border-green-400 hover:bg-green-50'
+                    }`}
+                  >
+                    {task.completed && <Check size={14} />}
+                  </button>
+                </div>
+                
+                <div className="flex items-center space-x-3 flex-1">
+                  <div className="relative">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowColorPicker(showColorPicker === task.id ? null : task.id);
+                      }}
+                      className="w-5 h-5 rounded-full border-2 border-white shadow-md hover:scale-125 transition-transform duration-200"
+                      style={{ backgroundColor: task.color }}
+                      title="色を変更"
+                    />
+                    
+                    {showColorPicker === task.id && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-[9998] bg-black bg-opacity-30"
+                          onClick={() => setShowColorPicker(null)}
+                        ></div>
+                        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[9999] bg-white rounded-xl shadow-2xl border-2 p-4 max-w-sm">
+                          <div className="flex items-center justify-between mb-3">
+                            <h3 className="text-base font-bold text-gray-800">色を選択</h3>
+                            <button
+                              onClick={() => setShowColorPicker(null)}
+                              className="text-gray-400 hover:text-gray-600 text-lg font-bold w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded-full transition-all"
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <div className="flex space-x-3">
+                            {colors.map((color, index) => (
+                              <div key={color} className="relative">
+                                <button
+                                  onClick={() => changeTaskColor(task.id, color)}
+                                  className={`w-10 h-10 rounded-full border-2 hover:scale-110 transition-all duration-200 shadow-md hover:shadow-lg ${
+                                    task.color === color ? 'border-gray-800 ring-3 ring-gray-300 scale-105' : 
+                                    selectedColorIndex === index ? 'border-blue-500 ring-2 ring-blue-300 scale-105' : 
+                                    'border-white hover:border-gray-300'
+                                  }`}
+                                  style={{ backgroundColor: color }}
+                                  title={color === '#3B82F6' ? '青：標準タスク' : color === '#EF4444' ? '赤：重要・緊急' : '黄：緊急・保留'}
+                                />
+                                {selectedColorIndex === index && (
+                                  <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full flex items-center justify-center">
+                                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-2 text-center">
+                            ← → で選択、Enter で決定
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  
+                  {editingTask === task.id ? (
+                    <input
+                      ref={(el) => {
+                        if (el) editInputRefs.current[task.id] = el;
+                      }}
+                      type="text"
+                      className="flex-1 font-medium text-gray-800 bg-white border-2 border-blue-400 rounded-lg px-3 py-2 focus:ring-4 focus:ring-blue-200 focus:border-blue-500 transition-all"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          finishEditTask(task.id);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setEditingTask(null);
+                        }
+                      }}
+                      onBlur={() => finishEditTask(task.id)}
+                    />
+                  ) : (
+                    <div className="flex items-center space-x-2 flex-1">
+                      <span 
+                        className={`font-medium cursor-pointer hover:text-blue-600 transition-colors select-none text-lg ${
+                          task.completed ? 'line-through text-gray-500' : 'text-gray-800'
+                        }`}
+                        onDoubleClick={() => startEditTask(task.id, task.title)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditTask(task.id, task.title);
+                        }}
+                        title="クリックまたはダブルクリックで編集"
+                      >
+                        {task.title}
+                        <div className="flex items-center space-x-2 mt-1">
+                          <span className="text-xs text-gray-400 font-normal">
+                            作成: {task.createdAt ? formatDateTime(task.createdAt) : ''}
+                          </span>
+                          {task.completed && task.completedAt && (
+                            <>
+                              <span className="text-xs text-red-500 font-normal">
+                                完了: {formatDateTime(task.completedAt)}
+                              </span>
+                              <span className="text-xs text-blue-600 font-medium bg-blue-50 px-2 py-0.5 rounded-full">
+                                所要時間: {calculateTimeDifference(task.createdAt, task.completedAt)}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAddForm(task.id);
+                  }}
+                  className="text-gray-400 hover:text-blue-500 p-2 rounded-lg hover:bg-blue-50 transition-all duration-200"
+                  title="サブタスク追加"
+                >
+                  <Plus size={18} />
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteTask(task.id);
+                  }}
+                  className="text-gray-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-all duration-200"
+                  title="削除"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {hasSubtasks && isExpanded && (
+          <div className="mt-2 space-y-2">
+            {task.subtasks.map(subtask => (
+              <TaskCard key={subtask.id} task={subtask} level={level + 1} />
+            ))}
+          </div>
+        )}
+
+        {showAddForm === task.id && (
+          <div 
+            className="border-2 rounded-xl p-4 mt-3 shadow-md"
+            style={{ 
+              marginLeft: `${(level + 1) * 24}px`,
+              backgroundColor: getTaskBackgroundColor(task.color, level + 1),
+              borderColor: getTaskBorderColor(task.color, level + 1)
+            }}
+          >
+            <div className="flex items-center space-x-3">
+              <input
+                ref={(el) => {
+                  if (el) subtaskInputRefs.current[task.id] = el;
+                }}
+                type="text"
+                placeholder="サブタスクのタイトル（Enterで追加）"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addTask(task.id);
+                  }
+                }}
+                className="flex-1 px-4 py-3 border-2 border-blue-300 rounded-lg focus:ring-4 focus:ring-blue-200 focus:border-blue-500 text-base transition-all"
+                autoFocus
+              />
+              
+              <button
+                onClick={() => addTask(task.id)}
+                className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 shadow-md"
+              >
+                追加
+              </button>
+              
+              <button
+                onClick={() => setShowAddForm(null)}
+                className="px-3 py-3 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-all"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const stats = calculateStats();
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
+      {notification && (
+        <div className="fixed top-4 right-4 bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-3 rounded-xl shadow-xl z-50">
+          <div className="flex items-center space-x-2">
+            <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+            <span className="font-medium">{notification}</span>
+          </div>
+        </div>
+      )}
+
+      <header className="bg-white/80 backdrop-blur-md shadow-lg border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-6 py-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl">
+                <Target className="text-white" size={28} />
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                  TODO Manager
+                </h1>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              <div className="relative">
+                <button
+                  onClick={() => setShowExportOptions(!showExportOptions)}
+                  className="flex items-center space-x-2 px-4 py-2 text-sm text-gray-600 hover:text-blue-600 transition-all rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-300"
+                >
+                  <Download size={18} />
+                  <span>エクスポート</span>
+                </button>
+                
+                {showExportOptions && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-[9998]"
+                      onClick={() => setShowExportOptions(false)}
+                    ></div>
+                    <div className="absolute right-0 top-full mt-2 z-[9999] bg-white rounded-xl shadow-xl border-2 p-3 min-w-48">
+                      <h3 className="text-sm font-bold text-gray-800 mb-2">エクスポート形式</h3>
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => exportData('json')}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 rounded-lg transition-all"
+                        >
+                          <div className="font-medium">📄 JSON形式</div>
+                          <div className="text-xs text-gray-500">完全なデータ（推奨）</div>
+                        </button>
+                        <button
+                          onClick={() => exportData('text')}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-green-50 hover:text-green-600 rounded-lg transition-all"
+                        >
+                          <div className="font-medium">📝 テキスト形式</div>
+                          <div className="text-xs text-gray-500">シンプルなリスト</div>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+              
+              <button
+                onClick={() => setShowImportArea(!showImportArea)}
+                className="flex items-center space-x-2 px-4 py-2 text-sm text-gray-600 hover:text-blue-600 transition-all rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-300"
+              >
+                <Upload size={18} />
+                <span>インポート</span>
+              </button>
+              
+              <button
+                onClick={() => {
+                  setTasks([]);
+                  setExpandedTasks(new Set());
+                  setSelectedTaskId(null);
+                  setIsEmptyAreaSelected(false);
+                  setShowAddForm(null);
+                  showNotification('🧹 すべてのタスクを削除しました');
+                }}
+                className="flex items-center space-x-2 px-4 py-2 text-sm text-white bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 rounded-lg transition-all duration-200 hover:scale-105 shadow-md"
+              >
+                <Trash2 size={18} />
+                <span>全削除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-7xl mx-auto px-6 py-8 flex gap-8">
+        <div className="flex-1">
+          <div className="mb-8">
+            <button
+              onClick={() => setShowAddForm('root')}
+              className="flex items-center space-x-3 px-8 py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-lg hover:shadow-xl"
+            >
+              <Plus size={24} />
+              <span className="text-lg">新しいタスクを追加</span>
+            </button>
+          </div>
+
+          {showImportArea && (
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-6 mb-8 shadow-md">
+              <h3 className="font-bold text-blue-800 mb-3 text-lg">📥 データをインポート</h3>
+              <div className="space-y-4">
+                <div className="text-sm text-blue-700 bg-blue-100 rounded-lg p-3">
+                  <div className="font-medium mb-2">💡 対応形式:</div>
+                  <div className="space-y-1 text-xs">
+                    <div><strong>JSON形式:</strong> エクスポートしたJSONデータ</div>
+                    <div><strong>テキスト形式:</strong> 1行1タスク、子タスクは「　└」で開始</div>
+                  </div>
+                </div>
+                <textarea
+                  placeholder="JSONデータまたはテキストを貼り付けてください..."
+                  className="w-full px-4 py-3 border-2 border-blue-300 rounded-lg resize-none focus:ring-4 focus:ring-blue-200 focus:border-blue-500 transition-all"
+                  rows="6"
+                  onChange={(e) => {
+                    if (e.target.value.trim()) {
+                      importData(e.target.value);
+                      e.target.value = '';
+                      setShowImportArea(false);
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {showExportedData && (
+            <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-6 mb-8 shadow-md">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-green-800 text-lg">📤 エクスポートしたデータ</h3>
+                <button
+                  onClick={() => setShowExportedData(false)}
+                  className="text-green-600 hover:text-green-800 hover:bg-green-100 rounded-lg p-2 transition-all"
+                  title="閉じる"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="bg-white border border-green-300 rounded-lg p-4 max-h-96 overflow-y-auto">
+                <pre className="text-sm text-gray-800 whitespace-pre-wrap font-mono">
+                  {exportedData}
+                </pre>
+              </div>
+              <div className="mt-3 flex items-center space-x-2 text-sm text-green-700">
+                <span>📋 クリップボードにもコピーされました</span>
+              </div>
+            </div>
+          )}
+
+          {showAddForm === 'root' && (
+            <div className="bg-white rounded-xl shadow-lg border-2 border-gray-200 p-6 mb-8">
+              <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                <Plus className="mr-2 text-blue-600" size={20} />
+                新しいタスク
+              </h3>
+              <div className="space-y-4">
+                <div className="flex items-center space-x-3">
+                  <span className="text-sm font-medium text-gray-700">色:</span>
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowNewTaskColorPicker(!showNewTaskColorPicker)}
+                      className="w-8 h-8 rounded-full border-2 border-white shadow-md hover:scale-110 transition-transform duration-200"
+                      style={{ backgroundColor: newTaskColor }}
+                      title="色を選択"
+                    />
+                    
+                    {showNewTaskColorPicker && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-[9998] bg-black bg-opacity-30"
+                          onClick={() => setShowNewTaskColorPicker(false)}
+                        ></div>
+                        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[9999] bg-white rounded-xl shadow-2xl border-2 p-4 max-w-sm">
+                          <div className="flex items-center justify-between mb-3">
+                            <h3 className="text-base font-bold text-gray-800">色を選択</h3>
+                            <button
+                              onClick={() => setShowNewTaskColorPicker(false)}
+                              className="text-gray-400 hover:text-gray-600 text-lg font-bold w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded-full transition-all"
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <div className="flex space-x-3">
+                            {colors.map(color => (
+                              <button
+                                key={color}
+                                onClick={() => {
+                                  setNewTaskColor(color);
+                                  setShowNewTaskColorPicker(false);
+                                }}
+                                className={`w-10 h-10 rounded-full border-2 hover:scale-110 transition-all duration-200 shadow-md hover:shadow-lg ${
+                                  newTaskColor === color ? 'border-gray-800 ring-3 ring-gray-300 scale-105' : 'border-white hover:border-gray-300'
+                                }`}
+                                style={{ backgroundColor: color }}
+                                title={color === '#3B82F6' ? '青：標準タスク' : color === '#EF4444' ? '赤：重要・緊急' : '黄：緊急・保留'}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="flex items-center space-x-4">
+                  <input
+                    ref={mainInputRef}
+                    type="text"
+                    placeholder="タスクのタイトル（Enterで追加）"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addTask('root');
+                      }
+                    }}
+                    className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-4 focus:ring-blue-200 focus:border-blue-500 text-base transition-all"
+                    autoFocus
+                  />
+                  
+                  <button
+                    onClick={() => addTask('root')}
+                    className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 shadow-md"
+                  >
+                    追加
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      setShowAddForm(null);
+                      setShowNewTaskColorPicker(false);
+                    }}
+                    className="px-4 py-3 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-all"
+                  >
+                    キャンセル
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {tasks.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="p-4 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
+                  <Target size={40} className="text-white" />
+                </div>
+                <h3 className="text-xl font-semibold text-gray-700 mb-2">まだタスクがありません</h3>
+                <p className="text-gray-500">上のボタンから新しいタスクを追加してください</p>
+              </div>
+            ) : (
+              <>
+                {tasks.map(task => (
+                  <TaskCard key={task.id} task={task} />
+                ))}
+                
+                <div
+                  data-empty-area="true"
+                  className={`h-12 rounded-xl border-2 border-dashed transition-all cursor-pointer hover:scale-[1.01] ${
+                    isEmptyAreaSelected
+                      ? 'border-blue-500 bg-blue-50 shadow-md'
+                      : 'border-gray-300 hover:border-gray-400 hover:bg-gray-50'
+                  }`}
+                  onClick={() => {
+                    setIsEmptyAreaSelected(!isEmptyAreaSelected);
+                    setSelectedTaskId(null);
+                  }}
+                  title="空のエリア（選択してEnterで新規タスク追加）"
+                >
+                  <div className="flex items-center justify-center h-full">
+                    {isEmptyAreaSelected ? (
+                      <div className="text-sm text-blue-600 font-medium">
+                        ✨ Enterで新規タスク追加
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-400">
+                        クリックして選択
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="w-80 space-y-6">
+          <div className="bg-white/80 backdrop-blur-md rounded-xl shadow-lg border border-gray-200 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
+              <BarChart3 className="mr-2 text-blue-600" size={20} />
+              進捗状況
+            </h3>
+            
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-600">完了済み</span>
+                <span className="font-bold text-green-600">{stats.completed}</span>
+              </div>
+              
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-600">進行中</span>
+                <span className="font-bold text-blue-600">{stats.inProgress}</span>
+              </div>
+              
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-600">合計</span>
+                <span className="font-bold text-gray-800">{stats.total}</span>
+              </div>
+              
+              <div className="mt-4">
+                <div className="flex items-center justify-between text-sm mb-2">
+                  <span className="text-gray-600">進捗率</span>
+                  <span className="font-bold text-indigo-600">{Math.round(stats.progress)}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${stats.progress}%` }}
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white/80 backdrop-blur-md rounded-xl shadow-lg border border-gray-200 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">⌨️ ショートカット</h3>
+            
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-600">↑ ↓</span>
+                <span className="text-gray-800">タスク選択</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Enter</span>
+                <span className="text-gray-800">サブタスク追加</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Ctrl+Enter</span>
+                <span className="text-gray-800">完了切替</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Space</span>
+                <span className="text-gray-800">編集開始</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Tab</span>
+                <span className="text-gray-800">階層下げ</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Shift+Tab</span>
+                <span className="text-gray-800">階層上げ</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Shift+Alt+↑↓</span>
+                <span className="text-gray-800">順序変更</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Ctrl+C</span>
+                <span className="text-gray-800">色変更</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Delete</span>
+                <span className="text-gray-800">削除</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Esc</span>
+                <span className="text-gray-800">キャンセル</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white/80 backdrop-blur-md rounded-xl shadow-lg border border-gray-200 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">🎨 色分けガイド</h3>
+            
+            <div className="space-y-3">
+              {colors.map((color, index) => (
+                <div key={color} className="flex items-center space-x-3">
+                  <div 
+                    className="w-4 h-4 rounded-full border border-gray-300"
+                    style={{ backgroundColor: color }}
+                  ></div>
+                  <span className="text-sm text-gray-700">
+                    {color === '#3B82F6' ? '標準タスク' : 
+                     color === '#EF4444' ? '重要・緊急' : 
+                     '注意・保留'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+} 
