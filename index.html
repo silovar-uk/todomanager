@@ -1,13 +1,2217 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite + React</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Plus, Check, X, Trash2, BarChart3, Target, ChevronDown, ChevronRight, Download, Upload, Lightbulb, FileText, HelpCircle, ArrowUp, AlertTriangle } from 'lucide-react';
+
+export default function TodoApp() {
+  // タスクの色定義 (緑はAI分解タスク、薄紫はAIアイデア出しタスク、黒はAI問い生成タスク)
+  const colors = ['#3B82F6', '#EF4444', '#FBBF24', '#22C55E', '#A78BFA', '#1F2937'];
+
+  const [tasks, setTasks] = useState([]); // 全タスクのステート
+  const [expandedTasks, setExpandedTasks] = useState(new Set()); // 展開されているタスクのIDを保持するSet
+  const [showAddForm, setShowAddForm] = useState(null); // タスク追加フォームの表示状態 (null, 'root', または親タスクID)
+  const [showImportArea, setShowImportArea] = useState(false); // インポートエリアの表示状態
+  const [notification, setNotification] = useState(''); // 通知メッセージのステート
+  const [editingTask, setEditingTask] = useState(null); // 編集中のタスクID
+  const [showColorPicker, setShowColorPicker] = useState(null); // カラーピッカーの表示状態 (null またはタスクID)
+  const [selectedTaskId, setSelectedTaskId] = useState(null); // 選択中のタスクID
+  const [isEmptyAreaSelected, setIsEmptyAreaSelected] = useState(false); // 空のエリアが選択されているか
+  const [newTaskColor, setNewTaskColor] = useState(colors[0]); // 新規タスクのデフォルト色
+  const [showNewTaskColorPicker, setShowNewTaskColorPicker] = useState(false); // 新規タスク用カラーピッカーの表示状態
+  const [exportedData, setExportedData] = useState(''); // エクスポートされたデータ
+  const [showExportedData, setShowExportedData] = useState(false); // エクスポートデータの表示状態
+  const [selectedColorIndex, setSelectedColorIndex] = useState(0); // カラーピッカーで選択中の色のインデックス
+  const [showExportOptions, setShowExportOptions] = useState(false); // エクスポートオプションの表示状態
+  const [exportDropdownPosition, setExportDropdownPosition] = useState({ top: 0, left: 0 }); // エクスポートドロップダウンの位置
+  const [importMode, setImportMode] = useState('add'); // インポートモード: 'add' (追加) または 'overwrite' (上書き)
+  const [isGeneratingSubtasks, setIsGeneratingSubtasks] = useState(false); // サブタスク生成中フラグ
+  const [isGeneratingIdeas, setIsGeneratingIdeas] = useState(false); // アイデア生成中フラグ
+  const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false); // 問い生成中フラグ
+  const [showMemoModal, setShowMemoModal] = useState(null); // メモモーダルの表示状態 (null またはタスクID)
+  const [currentMemo, setCurrentMemo] = useState(''); // 現在編集中のメモ内容
+  const [isFocusMode, setIsFocusMode] = useState(false); // 集中モードのオン/オフ
+  const [exportInProgress, setExportInProgress] = useState(false); // エクスポート処理中フラグ
+  const [showDeleteCompletedConfirmModal, setShowDeleteCompletedConfirmModal] = useState(false); // 完了タスク削除確認モーダルの表示状態
+
+  // UNDO機能のためのステートと参照
+  const [lastDeletedTaskInfo, setLastDeletedTaskInfo] = useState(null); // { task: {}, parentId: null, originalIndex: -1 }
+  const undoNotificationTimerRef = useRef(null);
+
+  const mainInputRef = useRef(null); // メインのタスク入力フィールドの参照
+  const subtaskInputRefs = useRef({}); // サブタスク入力フィールドの参照を管理するオブジェクト
+  const editInputRefs = useRef({}); // 編集入力フィールドの参照を管理するオブジェクト
+  const exportButtonRef = useRef(null); // エクスポートボタンの参照
+  const editingTaskRef = useRef(null);
+
+  // editingTaskの最新値を保持するためのref
+  useEffect(() => {
+    editingTaskRef.current = editingTask;
+  }, [editingTask]);
+
+  // Load tasks from localStorage on initial mount
+  useEffect(() => {
+    try {
+        const savedTasks = localStorage.getItem('todoAppTasks_v2');
+        if (savedTasks) {
+            const parsedTasks = JSON.parse(savedTasks);
+            const reviveDates = (taskList) => taskList.map(task => ({
+                ...task,
+                createdAt: task.createdAt ? new Date(task.createdAt) : null,
+                completedAt: task.completedAt ? new Date(task.completedAt) : null,
+                subtasks: task.subtasks ? reviveDates(task.subtasks) : []
+            }));
+            setTasks(reviveDates(parsedTasks));
+        }
+        const savedExpandedTasks = localStorage.getItem('todoAppExpandedTasks_v2');
+        if (savedExpandedTasks) {
+            setExpandedTasks(new Set(JSON.parse(savedExpandedTasks)));
+        }
+    } catch (error) {
+        console.error("Failed to load tasks from localStorage", error);
+        localStorage.removeItem('todoAppTasks_v2');
+        localStorage.removeItem('todoAppExpandedTasks_v2');
+    }
+  }, []);
+
+  // Save tasks to localStorage whenever they change
+  useEffect(() => {
+    try {
+        localStorage.setItem('todoAppTasks_v2', JSON.stringify(tasks));
+    } catch (error) {
+        console.error("Failed to save tasks to localStorage", error);
+    }
+  }, [tasks]);
+
+  // Save expanded tasks to localStorage whenever they change
+  useEffect(() => {
+    try {
+        localStorage.setItem('todoAppExpandedTasks_v2', JSON.stringify(Array.from(expandedTasks)));
+    } catch (error) {
+        console.error("Failed to save expanded tasks to localStorage", error);
+    }
+  }, [expandedTasks]);
+
+  // beforeunload event listener for data loss warning
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+        if (exportInProgress) {
+            return;
+        }
+        const hasData = tasks.length > 0;
+        const isEditingCurrentTask = editingTask !== null;
+        const isAddingRootTask = showAddForm === 'root' && mainInputRef.current?.value?.trim() !== '';
+        let isAddingSubTask = false;
+        if (typeof showAddForm === 'string' && showAddForm !== 'root') {
+            const subtaskInput = subtaskInputRefs.current[showAddForm];
+            if (subtaskInput && subtaskInput.value?.trim() !== '') {
+                isAddingSubTask = true;
+            }
+        }
+        const hasUnsavedChanges = hasData || isEditingCurrentTask || isAddingRootTask || isAddingSubTask;
+        if (hasUnsavedChanges) {
+            const message = '内容は保存されません。ページを離れるとすべてのデータが失われます。エクスポートは完了しましたか？';
+            e.preventDefault();
+            e.returnValue = message;
+            return message;
+        }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [tasks, editingTask, showAddForm, exportInProgress]);
+
+
+  // 通知を表示する関数
+  const showNotification = useCallback((message) => {
+    setNotification(message);
+    if (undoNotificationTimerRef.current) {
+      clearTimeout(undoNotificationTimerRef.current);
+    }
+    undoNotificationTimerRef.current = setTimeout(() => {
+      setNotification('');
+      setLastDeletedTaskInfo(null);
+      if (editingTaskRef.current) {
+        const inputElement = editInputRefs.current[editingTaskRef.current];
+        if (inputElement) {
+          inputElement.focus();
+          inputElement.select();
+        }
+      }
+    }, 3000);
+  }, []);
+
+  // ユニークなIDを生成する関数
+  const generateId = () => Math.random().toString(36).substr(2, 9);
+
+  // HEXカラーをRGBに変換する関数
+  const hexToRgb = (hex) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  // タスクの背景色を生成する関数 (階層に応じて透明度を調整)
+  const getTaskBackgroundColor = (color, level) => {
+    const rgb = hexToRgb(color);
+    if (!rgb) return 'rgba(255, 255, 255, 1)';
+    const baseOpacity = 0.1;
+    const levelOpacity = Math.min(baseOpacity + (level * 0.08), 0.6);
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${levelOpacity})`;
+  };
+
+  // タスクのボーダー色を生成する関数 (階層に応じて透明度を調整)
+  const getTaskBorderColor = (color, level) => {
+    const rgb = hexToRgb(color);
+    if (!rgb) return 'rgba(200, 200, 200, 0.3)';
+    const borderOpacity = Math.min(0.2 + (level * 0.1), 0.8);
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${borderOpacity})`;
+  };
+
+  // 日時をフォーマットする関数
+  const formatDateTime = (dateString) => {
+    if (!dateString) return '';
+    try {
+      const d = new Date(dateString);
+      if (isNaN(d.getTime())) return '';
+      const month = d.getMonth() + 1;
+      const day = d.getDate();
+      const hours = d.getHours();
+      const minutes = d.getMinutes().toString().padStart(2, '0');
+      return `${month}/${day} ${hours}:${minutes}`;
+    } catch (error) {
+      console.error("Error formatting date time:", error, "Input was:", dateString);
+      return '';
+    }
+  };
+
+  // 2つの日時の時間差を計算する関数
+  const calculateTimeDifference = (startDateString, endDateString) => {
+    if (!startDateString || !endDateString) return '';
+    try {
+      const start = new Date(startDateString);
+      const end = new Date(endDateString);
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) return '';
+
+      const diffMs = Math.abs(end - start);
+
+      const diffMinutes = Math.floor(diffMs / (1000 * 60));
+      const diffHours = Math.floor(diffMinutes / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffDays > 0) {
+        return `${diffDays}日${diffHours % 24}時間`;
+      } else if (diffHours > 0) {
+        return `${diffHours}時間${diffMinutes % 60}分`;
+      } else if (diffMinutes > 0) {
+        return `${diffMinutes}分`;
+      } else {
+        return '1分未満';
+      }
+    } catch (error) {
+      console.error("Error calculating time difference:", error);
+      return '';
+    }
+  };
+
+  // 全てのタスクをフラットな配列として取得する関数 (展開されているサブタスクのみ)
+  const getAllTasksFlat = useCallback(() => {
+    const flatTasks = [];
+    const flatten = (taskList) => {
+      taskList.forEach(task => {
+        flatTasks.push(task);
+        if (task.subtasks && task.subtasks.length > 0 && expandedTasks.has(task.id)) {
+          flatten(task.subtasks);
+        }
+      });
+    };
+    flatten(tasks);
+    return flatTasks;
+  }, [tasks, expandedTasks]);
+
+  // 集中モード時に表示するタスクをフィルタリングする関数
+  const getFilteredTasksForFocusMode = useCallback(() => {
+    if (!isFocusMode || !selectedTaskId) {
+      return tasks;
+    }
+    const findTaskAndItsRootParent = (taskList, targetId, path = []) => {
+        for (let i = 0; i < taskList.length; i++) {
+          const task = taskList[i];
+          const currentPath = [...path, task];
+          if (task.id === targetId) {
+            return currentPath[0];
+          }
+          if (task.subtasks && task.subtasks.length > 0) {
+            const foundRoot = findTaskAndItsRootParent(task.subtasks, targetId, currentPath);
+            if (foundRoot) {
+              return foundRoot;
+            }
+          }
+        }
+        return null;
+    };
+    const rootParentOfSelected = findTaskAndItsRootParent(tasks, selectedTaskId);
+    if (rootParentOfSelected) {
+        return [rootParentOfSelected];
+    }
+    return tasks;
+  }, [isFocusMode, selectedTaskId, tasks]);
+
+  // Helper to get the full path of a task's title including its ancestors
+  const getTaskPath = useCallback((taskId) => {
+    const path = [];
+    const findPath = (currentTasks, targetId) => {
+      for (const task of currentTasks) {
+        if (task.id === targetId) {
+          path.unshift(task.title);
+          return true;
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          if (findPath(task.subtasks, targetId)) {
+            path.unshift(task.title);
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    findPath(tasks, taskId);
+    return path.join(' > ');
+  }, [tasks]);
+
+  // Helper to find a task's parent ID
+  const findParentId = useCallback((taskIdToFind, currentTasks, parentId = null) => {
+    for (const task of currentTasks) {
+      if (task.id === taskIdToFind) {
+        return parentId;
+      }
+      if (task.subtasks && task.subtasks.length > 0) {
+        const foundParentId = findParentId(taskIdToFind, task.subtasks, task.id);
+        if (foundParentId !== null) {
+          return foundParentId;
+        }
+      }
+    }
+    return null;
+  }, []);
+
+
+  // タスクの階層を1つ下げる関数
+  const moveTaskDown = useCallback((taskId) => {
+    const findAndMoveTask = (taskList) => {
+      for (let i = 0; i < taskList.length; i++) {
+        const task = taskList[i];
+        if (task.id === taskId) {
+          if (i > 0) {
+            const prevSibling = taskList[i - 1];
+            const taskToMove = { ...task };
+            const newTaskList = [...taskList];
+            newTaskList.splice(i, 1);
+            const updatedPrevSibling = {
+              ...prevSibling,
+              subtasks: [...(prevSibling.subtasks || []), taskToMove]
+            };
+            newTaskList[i - 1] = updatedPrevSibling;
+            setExpandedTasks(prev => new Set([...prev, prevSibling.id]));
+            showNotification('📥 階層を下げました');
+            return newTaskList;
+          }
+          return taskList;
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          const updatedSubtasks = findAndMoveTask(task.subtasks);
+          if (updatedSubtasks !== task.subtasks) {
+            return taskList.map(t =>
+              t.id === task.id ? { ...t, subtasks: updatedSubtasks } : t
+            );
+          }
+        }
+      }
+      return taskList;
+    };
+    setTasks(prev => findAndMoveTask(prev));
+  }, [setTasks, setExpandedTasks, showNotification]);
+
+  // タスクの階層を1つ上げる関数
+  const moveTaskUp = useCallback((taskId) => {
+    let taskMoved = false;
+    const processTaskList = (taskList, parentTask = null, parentList = null, parentIndexInParentList = -1) => {
+        for (let i = 0; i < taskList.length; i++) {
+          const task = taskList[i];
+          if (task.id === taskId) {
+            if (!parentTask) {
+              showNotification('⚠️ これ以上階層を上げることはできません');
+              return taskList;
+            }
+            const taskToMove = { ...task };
+            const newCurrentSubtasks = taskList.filter(t => t.id !== taskId);
+            if (parentList && parentIndexInParentList !== -1) {
+              parentList.splice(parentIndexInParentList + 1, 0, taskToMove);
+              taskMoved = true;
+              showNotification('📤 階層を上げました');
+              parentList[parentIndexInParentList] = {
+                ...parentTask,
+                subtasks: newCurrentSubtasks
+              };
+              return parentList;
+            }
+            return taskList;
+          }
+          if (task.subtasks && task.subtasks.length > 0) {
+            const result = processTaskList(task.subtasks, task, taskList, i);
+            if (taskMoved) {
+              if (result !== task.subtasks && !parentList) { return result; }
+              if (result !== task.subtasks && parentList) { return result; }
+              if (result !== task.subtasks) {
+                  return taskList.map(t => t.id === task.id ? {...t, subtasks: result} : t);
+              }
+            }
+          }
+        }
+        return taskList;
+    };
+    setTasks(prevTasks => {
+        const clonedTasks = JSON.parse(JSON.stringify(prevTasks));
+        const updatedTasks = processTaskList(clonedTasks);
+        return taskMoved ? updatedTasks : prevTasks;
+    });
+  }, [setTasks, showNotification]);
+
+
+  // タスクを垂直方向に移動する関数 (兄弟タスク間での順序変更、循環あり)
+  const moveTaskVertically = useCallback((taskId, direction) => {
+    let taskMoved = false;
+
+    const moveInList = (taskList) => {
+      const taskIndex = taskList.findIndex(t => t.id === taskId);
+      if (taskIndex === -1) { // タスクが現在のリストにない場合
+        // サブタスクを再帰的に検索
+        return taskList.map(task => {
+          if (task.subtasks && task.subtasks.length > 0) {
+            const updatedSubtasks = moveInList(task.subtasks);
+            if (updatedSubtasks !== task.subtasks) { // サブタスク内で移動があった場合
+              taskMoved = true; // taskMovedフラグを伝播させる
+              return { ...task, subtasks: updatedSubtasks };
+            }
+          }
+          return task;
+        });
+      }
+
+      // タスクが現在のリストで見つかった場合
+      const currentTask = taskList[taskIndex];
+      const newList = [...taskList];
+      newList.splice(taskIndex, 1); // 一旦リストから削除
+
+      if (direction === 'up') {
+        const newIndex = taskIndex === 0 ? newList.length : taskIndex - 1;
+        newList.splice(newIndex, 0, currentTask);
+        showNotification(taskIndex === 0 ? '🔃 タスクを一番下に移動しました' : '⬆️ タスクを上に移動しました');
+      } else { // 'down'
+        const newIndex = taskIndex === taskList.length - 1 ? 0 : taskIndex + 1;
+        newList.splice(newIndex, 0, currentTask);
+        showNotification(taskIndex === taskList.length - 1 ? '🔃 タスクを一番上に移動しました' : '⬇️ タスクを下に移動しました');
+      }
+      taskMoved = true;
+      return newList;
+    };
+
+    setTasks(prevTasks => {
+      const updatedTasks = moveInList(prevTasks);
+      if (taskMoved) {
+        setSelectedTaskId(taskId); // 移動後も選択状態を維持
+        setTimeout(() => {
+          const movedElement = document.querySelector(`[data-task-id="${taskId}"]`);
+          if (movedElement) {
+            movedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 50);
+      }
+      return updatedTasks;
+    });
+  }, [setTasks, setSelectedTaskId, showNotification]);
+
+
+  // タスクを一番上に持ってくる関数
+  const moveTaskToTop = useCallback((taskId) => {
+    let taskMoved = false;
+    const processList = (currentList) => {
+      const taskIndex = currentList.findIndex(t => t.id === taskId);
+      if (taskIndex !== -1) {
+        if (taskIndex === 0) {
+          showNotification('ℹ️ タスクはすでに一番上だよ！');
+          return currentList;
+        }
+        const taskToMove = currentList[taskIndex];
+        const newList = [...currentList];
+        newList.splice(taskIndex, 1);
+        newList.unshift(taskToMove);
+        taskMoved = true;
+        showNotification('⬆️ タスクを一番上に移動したよ！');
+        setSelectedTaskId(taskId);
+        return newList;
+      }
+      return currentList.map(task => {
+        if (task.subtasks && task.subtasks.length > 0) {
+          const updatedSubtasks = processList(task.subtasks);
+          if (updatedSubtasks !== task.subtasks) {
+              taskMoved = true;
+              return { ...task, subtasks: updatedSubtasks };
+          }
+        }
+        return task;
+      });
+    };
+    setTasks(prevTasks => {
+      const updatedTasks = processList(prevTasks);
+      if (taskMoved) {
+        setTimeout(() => {
+          const movedElement = document.querySelector(`[data-task-id="${taskId}"]`);
+          if (movedElement) {
+            movedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 50);
+      }
+      return updatedTasks;
+    });
+  }, [setTasks, setSelectedTaskId, showNotification]);
+
+  // タスクを一番下に持ってくる関数
+  const moveTaskToBottom = useCallback((taskId) => {
+    let taskMoved = false;
+    const processList = (currentList) => {
+      const taskIndex = currentList.findIndex(t => t.id === taskId);
+      if (taskIndex !== -1) {
+        if (taskIndex === currentList.length - 1) {
+          showNotification('ℹ️ タスクはすでに一番下だよ！');
+          return currentList; // Already at the bottom
+        }
+        const taskToMove = currentList[taskIndex];
+        const newList = [...currentList];
+        newList.splice(taskIndex, 1); // Remove from current position
+        newList.push(taskToMove); // Add to the end
+        taskMoved = true;
+        showNotification('⬇️ タスクを一番下に移動したよ！');
+        setSelectedTaskId(taskId);
+        return newList;
+      }
+      return currentList.map(task => {
+        if (task.subtasks && task.subtasks.length > 0) {
+          const updatedSubtasks = processList(task.subtasks);
+          if (updatedSubtasks !== task.subtasks) {
+            taskMoved = true;
+            return { ...task, subtasks: updatedSubtasks };
+          }
+        }
+        return task;
+      });
+    };
+    setTasks(prevTasks => {
+      const updatedTasks = processList(prevTasks);
+      if (taskMoved) {
+        setTimeout(() => {
+          const movedElement = document.querySelector(`[data-task-id="${taskId}"]`);
+          if (movedElement) {
+            movedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 50);
+      }
+      return updatedTasks;
+    });
+  }, [setTasks, setSelectedTaskId, showNotification]);
+
+
+  // キーボードでの選択移動
+  const moveSelection = useCallback((direction) => {
+    const flatTasks = getAllTasksFlat();
+    if (direction === 'down') {
+      if (!selectedTaskId && !isEmptyAreaSelected) {
+        if (flatTasks.length > 0) {
+          setSelectedTaskId(flatTasks[0].id);
+          setIsEmptyAreaSelected(false);
+        } else {
+          setIsEmptyAreaSelected(true);
+        }
+        return;
+      }
+      if (isEmptyAreaSelected) {
+        if (flatTasks.length > 0) {
+          setSelectedTaskId(flatTasks[0].id);
+          setIsEmptyAreaSelected(false);
+        }
+        return;
+      }
+      if (selectedTaskId) {
+        const currentIndex = flatTasks.findIndex(task => task.id === selectedTaskId);
+        if (currentIndex < flatTasks.length - 1) {
+          setSelectedTaskId(flatTasks[currentIndex + 1].id);
+        } else {
+          setSelectedTaskId(null);
+          setIsEmptyAreaSelected(true);
+        }
+      }
+    } else { // 'up'
+      if (isEmptyAreaSelected) {
+        if (flatTasks.length > 0) {
+          setSelectedTaskId(flatTasks[flatTasks.length - 1].id);
+          setIsEmptyAreaSelected(false);
+        }
+        return;
+      }
+      if (!selectedTaskId) {
+        if (tasks.length > 0) {
+            setIsEmptyAreaSelected(true);
+        }
+        return;
+      }
+      if (selectedTaskId) {
+        const currentIndex = flatTasks.findIndex(task => task.id === selectedTaskId);
+        if (currentIndex > 0) {
+          setSelectedTaskId(flatTasks[currentIndex - 1].id);
+        } else {
+          setSelectedTaskId(null);
+          setIsEmptyAreaSelected(true);
+        }
+      }
+    }
+    setTimeout(() => {
+      if (selectedTaskId) {
+        const selectedElement = document.querySelector(`[data-task-id="${selectedTaskId}"]`);
+        if (selectedElement) {
+          selectedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      } else if (isEmptyAreaSelected) {
+        const emptyArea = document.querySelector('[data-empty-area="true"]');
+        if (emptyArea) {
+          emptyArea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    }, 50);
+  }, [getAllTasksFlat, selectedTaskId, isEmptyAreaSelected, setSelectedTaskId, setIsEmptyAreaSelected, tasks.length]);
+
+  // データをエクスポートする関数
+  const exportData = useCallback(async (format = 'json') => {
+    setExportInProgress(true);
+    try {
+        let dataToCopy = '';
+        const filterCompletedTasks = (taskList) => {
+          return taskList.filter(task => !task.completed)
+            .map(task => ({
+              ...task,
+              subtasks: task.subtasks ? filterCompletedTasks(task.subtasks) : []
+            }));
+        };
+        const nonCompletedTasks = filterCompletedTasks(tasks);
+
+        if (format === 'json') {
+          dataToCopy = JSON.stringify({ tasks: nonCompletedTasks, expandedTasks: Array.from(expandedTasks) }, null, 2);
+          setExportedData(dataToCopy);
+          showNotification('📤 JSON形式でエクスポート完了！');
+        } else if (format === 'text') {
+          const convertTasksToText = (taskList, level = 0) => {
+            let text = '';
+            taskList.forEach(task => {
+              if (task.completed) return;
+              const indent = level === 0 ? '' : '　└';
+              const prefix = level > 1 ? '　'.repeat(level - 1) + '└' : indent;
+              text += `${prefix}${task.title}\n`;
+              if (task.subtasks && task.subtasks.length > 0) {
+                text += convertTasksToText(task.subtasks, level + 1);
+              }
+            });
+            return text;
+          };
+          dataToCopy = convertTasksToText(nonCompletedTasks);
+          setExportedData(dataToCopy);
+          setShowExportedData(true);
+          showNotification('📤 テキスト形式でエクスポート完了！');
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = dataToCopy;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        try {
+          document.execCommand('copy');
+        } catch (err) {
+          console.error('Failed to copy text:', err);
+        }
+        document.body.removeChild(textarea);
+        setShowExportOptions(false);
+    } catch (error) {
+        console.error("Export error:", error);
+        showNotification('❌ エクスポート中にエラーが発生しました。');
+    } finally {
+        setTimeout(() => setExportInProgress(false), 100);
+    }
+  }, [tasks, expandedTasks, setExportedData, setShowExportedData, showNotification, setShowExportOptions]);
+
+
+  // インポートされたタスクに新しいIDを再帰的に割り当てるヘルパー関数
+  const assignNewIdsRecursively = useCallback((taskList) => {
+    return taskList.map(task => {
+      const newId = generateId();
+      return {
+        ...task,
+        id: newId,
+        memo: task.memo || '',
+        emoji: task.emoji || '',
+        createdAt: task.createdAt ? new Date(task.createdAt) : new Date(),
+        completedAt: task.completedAt ? new Date(task.completedAt) : null,
+        subtasks: task.subtasks ? assignNewIdsRecursively(task.subtasks) : []
+      };
+    });
+  }, [generateId]);
+
+  // LLMを使って絵文字を生成する関数
+  const generateEmojiForTask = useCallback(async (taskId, taskTitle) => {
+    if (!taskTitle || taskTitle.trim() === '') return;
+
+    try {
+      const promptText = `Given the task title: "${taskTitle}", suggest a single relevant emoji. Respond with only the emoji character.`;
+      let chatHistory = [{ role: "user", parts: [{ text: promptText }] }];
+      const payload = {
+        contents: chatHistory,
+        generationConfig: {
+          responseMimeType: "text/plain",
+        }
+      };
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const resultText = await response.text();
+      let emoji = '';
+      try {
+        const jsonResult = JSON.parse(resultText);
+        if (jsonResult.candidates && jsonResult.candidates[0]?.content?.parts?.[0]?.text) {
+          emoji = jsonResult.candidates[0].content.parts[0].text.trim();
+        }
+      } catch (e) {
+        emoji = resultText.trim();
+      }
+      if (emoji && emoji !== 'null') {
+        setTasks(prevTasks => {
+          const updateEmojiRecursively = (taskList) => {
+            return taskList.map(task => {
+              if (task.id === taskId) {
+                return { ...task, emoji: emoji };
+              }
+              if (task.subtasks && task.subtasks.length > 0) {
+                return { ...task, subtasks: updateEmojiRecursively(task.subtasks) };
+              }
+              return task;
+            });
+          };
+          return updateEmojiRecursively(prevTasks);
+        });
+      } else {
+        console.warn('Emoji generation API returned empty or invalid response for:', taskTitle);
+      }
+    } catch (error) {
+      console.error('Emoji generation API Error:', error);
+    }
+  }, [setTasks]);
+
+  // データをインポートする関数
+  const importData = useCallback((text) => {
+    const trimmedText = text.trim();
+    let tasksToProcess = [];
+    const collectExpandableTaskIds = (taskList) => {
+      const ids = new Set();
+      const traverse = (tasksToTraverse) => {
+        tasksToTraverse.forEach(task => {
+          if (task.subtasks && task.subtasks.length > 0) {
+            ids.add(task.id);
+            traverse(task.subtasks);
+          }
+        });
+      };
+      traverse(taskList);
+      return ids;
+    };
+
+    if (trimmedText.startsWith('{') || trimmedText.startsWith('[')) {
+      try {
+        const importedData = JSON.parse(trimmedText);
+        let rawTasks = [];
+        if (importedData.tasks && Array.isArray(importedData.tasks)) {
+            rawTasks = importedData.tasks;
+        } else if (Array.isArray(importedData)) {
+            rawTasks = importedData;
+        } else {
+            showNotification('❌ 無効なJSONデータ形式です');
+            return;
+        }
+        tasksToProcess = assignNewIdsRecursively(rawTasks);
+
+        if (importedData.expandedTasks && Array.isArray(importedData.expandedTasks)) {
+            const newExpanded = new Set();
+            const expandParents = (taskList) => {
+                taskList.forEach(task => {
+                    if (task.subtasks && task.subtasks.length > 0) {
+                        newExpanded.add(task.id);
+                        expandParents(task.subtasks);
+                    }
+                });
+            };
+            expandParents(tasksToProcess);
+            if (importMode === 'overwrite') {
+                setExpandedTasks(newExpanded);
+            } else {
+                setExpandedTasks(oldExpanded => new Set([...oldExpanded, ...newExpanded]));
+            }
+        }
+
+
+      } catch (error) {
+        console.error("Error parsing JSON data:", error);
+        showNotification('❌ 無効なJSONデータです');
+        return;
+      }
+    } else { // Text import
+      try {
+        const lines = trimmedText.split('\n').filter(line => line.trim());
+        const newTasksFromText = [];
+        const taskStack = [{ subtasks: newTasksFromText, level: -1, id: null }];
+
+        lines.forEach(line => {
+          const currentTrimmedLine = line.trim();
+          if (!currentTrimmedLine) return;
+          let level = 0;
+          let taskTitle = currentTrimmedLine;
+          if (currentTrimmedLine.startsWith('　└')) {
+            level = 1;
+            let currentIndent = 0;
+            while(line.substring(currentIndent, currentIndent + 2) === '　└' || line.substring(currentIndent, currentIndent + 1) === '　' || line.substring(currentIndent, currentIndent + 1) === '└'){
+                 if(line.substring(currentIndent, currentIndent + 2) === '　└'){ level++; currentIndent +=2; }
+                 else if (line.substring(currentIndent, currentIndent + 1) === '└'){ level++; currentIndent +=1; }
+                 else if (line.substring(currentIndent, currentIndent + 1) === '　'){ currentIndent +=1; }
+                 else { break; }
+            }
+            taskTitle = line.substring(currentIndent).trim();
+          } else if (currentTrimmedLine.startsWith('└')) {
+            level = 1;
+            taskTitle = currentTrimmedLine.substring(1).trim();
+          }
+          while (taskStack.length > level + 1 && taskStack[taskStack.length -1].level >= level) {
+              taskStack.pop();
+          }
+          const newTask = {
+            id: generateId(), title: taskTitle, completed: false, color: colors[0],
+            createdAt: new Date(), completedAt: null, subtasks: [], memo: '', emoji: ''
+          };
+          const parent = taskStack[taskStack.length - 1];
+          if (!parent.subtasks) parent.subtasks = [];
+          parent.subtasks.push(newTask);
+          taskStack.push({...newTask, level: level });
+        });
+        tasksToProcess = newTasksFromText;
+      } catch (error) {
+        console.error("Error parsing text data:", error);
+        showNotification('❌ テキストの解析に失敗しました');
+        return;
+      }
+    }
+
+    if (importMode === 'overwrite') {
+      setTasks(tasksToProcess);
+      const newExpanded = collectExpandableTaskIds(tasksToProcess);
+      setExpandedTasks(newExpanded);
+      showNotification(`📥 ${tasksToProcess.length}個のタスクを上書きしました`);
+    } else { // 'add'
+      setTasks(prevTasks => {
+        const newTasksList = [...prevTasks, ...tasksToProcess];
+        const newExpandedIds = collectExpandableTaskIds(tasksToProcess);
+        setExpandedTasks(oldExpanded => new Set([...oldExpanded, ...newExpandedIds]));
+        return newTasksList;
+      });
+      showNotification(`📥 ${tasksToProcess.length}個のタスクを追加しました`);
+    }
+
+    const generateEmojisRecursively = (taskList) => {
+      taskList.forEach(task => {
+        if (task.title && task.title.trim() !== '') {
+          generateEmojiForTask(task.id, task.title);
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          generateEmojisRecursively(task.subtasks);
+        }
+      });
+    };
+    generateEmojisRecursively(tasksToProcess);
+
+    setShowImportArea(false);
+  }, [assignNewIdsRecursively, colors, importMode, setTasks, setExpandedTasks, setShowImportArea, showNotification, generateId, generateEmojiForTask]);
+
+  // タスクを追加する関数
+  const addTask = useCallback((parentId = null, initialTitle = '', customColor = null, insertAfterId = null, isFromShortcut = false) => {
+    let title = initialTitle;
+    let taskColor = newTaskColor;
+
+    if (parentId && parentId !== 'root') {
+      if (!isFromShortcut && !initialTitle) {
+        const inputRef = subtaskInputRefs.current[parentId];
+        if (inputRef) {
+          title = inputRef.value.trim();
+          if (!title) {
+            showNotification('サブタスクのタイトルを入力してください。');
+            return null;
+          }
+          inputRef.value = '';
+        }
+      }
+      const findParentColor = (taskListToSearch) => {
+        for (let t of taskListToSearch) {
+          if (t.id === parentId) return t.color;
+          if (t.subtasks && t.subtasks.length > 0) {
+            const foundColor = findParentColor(t.subtasks);
+            if (foundColor) return foundColor;
+          }
+        }
+        return colors[0];
+      };
+      taskColor = customColor || findParentColor(tasks);
+    } else if (parentId === 'root') {
+      if (!isFromShortcut && !initialTitle && mainInputRef.current && mainInputRef.current.value.trim()) {
+        title = mainInputRef.current.value.trim();
+        mainInputRef.current.value = '';
+      }
+      taskColor = customColor || newTaskColor;
+    } else {
+      taskColor = customColor || newTaskColor;
+    }
+
+    if (!title && !isFromShortcut) {
+        showNotification('タスクのタイトルを入力してください。');
+        return null;
+    }
+
+    const newTaskObject = {
+      id: generateId(), title: title, completed: false, color: taskColor,
+      createdAt: new Date(), completedAt: null, subtasks: [], memo: '', emoji: ''
+    };
+
+    if (parentId && parentId !== 'root') {
+      setTasks(prev => {
+        const addSubtaskRecursively = (currentTaskList) => {
+          return currentTaskList.map(t => {
+            if (t.id === parentId) {
+              const newSubtasks = [...(t.subtasks || [])];
+              if (insertAfterId) {
+                const insertIndex = newSubtasks.findIndex(st => st.id === insertAfterId);
+                if (insertIndex !== -1) {
+                  newSubtasks.splice(insertIndex + 1, 0, newTaskObject);
+                } else {
+                  newSubtasks.push(newTaskObject);
+                }
+              } else {
+                newSubtasks.push(newTaskObject);
+              }
+              return { ...t, subtasks: newSubtasks };
+            }
+            if (t.subtasks && t.subtasks.length > 0) {
+              return { ...t, subtasks: addSubtaskRecursively(t.subtasks) };
+            }
+            return t;
+          });
+        };
+        return addSubtaskRecursively(prev);
+      });
+      setExpandedTasks(prev => new Set(prev).add(parentId));
+    } else {
+      setTasks(prev => {
+        const newRootTasks = [...prev];
+        if (insertAfterId) {
+          const insertIndex = newRootTasks.findIndex(t => t.id === insertAfterId);
+          if (insertIndex !== -1) {
+            newRootTasks.splice(insertIndex + 1, 0, newTaskObject);
+          } else {
+            newRootTasks.unshift(newTaskObject);
+          }
+        } else {
+          newRootTasks.unshift(newTaskObject);
+        }
+        return newRootTasks;
+      });
+    }
+
+    setSelectedTaskId(newTaskObject.id);
+    setIsEmptyAreaSelected(false);
+    setShowAddForm(null);
+
+    if (newTaskObject.title && newTaskObject.title.trim() !== '' && !isFromShortcut) {
+      generateEmojiForTask(newTaskObject.id, newTaskObject.title);
+    }
+    return newTaskObject;
+  }, [colors, newTaskColor, tasks, setTasks, setExpandedTasks, setSelectedTaskId, setIsEmptyAreaSelected, setShowAddForm, subtaskInputRefs, mainInputRef, showNotification, generateId, generateEmojiForTask]);
+
+
+  // タスクの完了状態を切り替える関数
+  const toggleComplete = useCallback((taskId) => {
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          const newCompleted = !task.completed;
+          const completeAllSubtasks = (subtaskList) => {
+            return subtaskList.map(subtask => {
+              const newSubtask = { ...subtask, completed: true, completedAt: new Date() };
+              if (subtask.subtasks && subtask.subtasks.length > 0) {
+                newSubtask.subtasks = completeAllSubtasks(subtask.subtasks);
+              }
+              return newSubtask;
+            });
+          };
+          if (newCompleted && task.subtasks && task.subtasks.length > 0) {
+            showNotification('✅ タスクとサブタスクを完了しました');
+            return {
+              ...task, completed: true, completedAt: new Date(),
+              subtasks: completeAllSubtasks(task.subtasks)
+            };
+          }
+          showNotification(newCompleted ? '✅ タスクを完了しました' : '📝 未完了に戻しました');
+          return { ...task, completed: newCompleted, completedAt: newCompleted ? new Date() : null };
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+    setTasks(prev => updateTaskRecursively(prev));
+  }, [setTasks, showNotification]);
+
+  // タスクの色を変更する関数
+  const changeTaskColor = useCallback((taskId, newColor) => {
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          return { ...task, color: newColor };
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+    setTasks(prev => updateTaskRecursively(prev));
+    setShowColorPicker(null);
+    showNotification('🎨 色を変更しました');
+  }, [setTasks, setShowColorPicker, showNotification]);
+
+  // Helper to find a task's location
+  const findTaskLocation = useCallback((taskList, targetId, currentParentId = null) => {
+    for (let i = 0; i < taskList.length; i++) {
+      const task = taskList[i];
+      if (task.id === targetId) {
+        return { task, parentId: currentParentId, originalIndex: i };
+      }
+      if (task.subtasks && task.subtasks.length > 0) {
+        const found = findTaskLocation(task.subtasks, targetId, task.id);
+        if (found) return found;
+      }
+    }
+    return null;
+  }, []);
+
+  // タスクを削除する関数
+  const deleteTask = useCallback((taskId) => {
+    if (undoNotificationTimerRef.current) {
+      clearTimeout(undoNotificationTimerRef.current);
+    }
+    setTasks(prevTasks => {
+      const location = findTaskLocation(prevTasks, taskId);
+      let deletedTask = null, parentId = null, originalIndex = -1;
+      if (location) {
+        ({ task: deletedTask, parentId, originalIndex } = location);
+      }
+      const removeTaskRecursively = (currentTaskList) => {
+        return currentTaskList.filter(task => {
+          if (task.id === taskId) return false;
+          if (task.subtasks && task.subtasks.length > 0) {
+            task.subtasks = removeTaskRecursively(task.subtasks);
+          }
+          return true;
+        });
+      };
+      const updatedTasks = removeTaskRecursively(prevTasks);
+      if (deletedTask) {
+        setLastDeletedTaskInfo({ task: deletedTask, parentId, originalIndex });
+        showNotification('🗑️ タスクを削除しました。');
+        undoNotificationTimerRef.current = setTimeout(() => {
+          setLastDeletedTaskInfo(null);
+          setNotification('');
+        }, 5000);
+      }
+      if (selectedTaskId === taskId) setSelectedTaskId(null);
+      return updatedTasks;
+    });
+  }, [setTasks, selectedTaskId, setSelectedTaskId, showNotification, findTaskLocation]);
+
+  // 完了済みのタスクを実際に削除する処理
+  const executeDeleteCompletedTasks = useCallback(() => {
+    const removeCompletedRecursively = (taskList) => {
+      return taskList
+        .map(task => {
+          if (task.subtasks && task.subtasks.length > 0) {
+            const updatedSubtasks = removeCompletedRecursively(task.subtasks);
+            return { ...task, subtasks: updatedSubtasks };
+          }
+          return task;
+        })
+        .filter(task => !task.completed);
+    };
+
+    setTasks(prevTasks => {
+      const originalTaskCount = getAllTasksFlat().length; // 削除前の総タスク数をカウント
+      const updatedTasks = removeCompletedRecursively(prevTasks);
+      const finalTaskCount = updatedTasks.reduce((acc, task) => acc + 1 + (task.subtasks ? task.subtasks.length : 0), 0);
+
+
+      const remainingTaskIds = new Set();
+      const collectIds = (ts) => {
+        ts.forEach(t => {
+          remainingTaskIds.add(t.id);
+          if (t.subtasks) collectIds(t.subtasks);
+        });
+      };
+      collectIds(updatedTasks);
+      setExpandedTasks(currentExpanded => new Set([...currentExpanded].filter(id => remainingTaskIds.has(id))));
+
+      if (finalTaskCount < originalTaskCount) {
+          showNotification('🧹 完了済みのタスクを一括削除しました。');
+      } else {
+          showNotification('ℹ️ 削除対象の完了済みタスクはありませんでした。');
+      }
+      return updatedTasks;
+    });
+    setShowDeleteCompletedConfirmModal(false);
+  }, [setTasks, setExpandedTasks, showNotification, getAllTasksFlat]); // getAllTasksFlat を依存配列に追加
+
+  // 「完了済みのタスク削除」ボタンが押されたときの処理（確認モーダル表示）
+  const handleDeleteCompletedTasks = useCallback(() => {
+    const completedTasksExist = tasks.some(task => {
+      const checkCompleted = (t) => {
+          if (t.completed) return true;
+          if (t.subtasks && t.subtasks.some(st => checkCompleted(st))) return true;
+          return false;
+      }
+      return checkCompleted(task);
+    });
+
+    if (completedTasksExist) {
+        setShowDeleteCompletedConfirmModal(true);
+    } else {
+        showNotification('ℹ️ 削除対象の完了済みタスクはありません。');
+    }
+  }, [tasks, showNotification]);
+
+
+  // 削除を元に戻す関数
+  const undoDelete = useCallback(() => {
+    if (!lastDeletedTaskInfo || !lastDeletedTaskInfo.task) {
+      showNotification('元に戻せるタスクがありません。');
+      return;
+    }
+    const { task, parentId, originalIndex } = lastDeletedTaskInfo;
+    setTasks(prevTasks => {
+      const newTasks = JSON.parse(JSON.stringify(prevTasks));
+      if (parentId === null) {
+        newTasks.splice(originalIndex, 0, task);
+      } else {
+        const findAndInsert = (currentTaskList) => {
+          for (let i = 0; i < currentTaskList.length; i++) {
+            const currentTask = currentTaskList[i];
+            if (currentTask.id === parentId) {
+              if (!currentTask.subtasks) currentTask.subtasks = [];
+              const insertIndex = Math.min(originalIndex, currentTask.subtasks.length);
+              currentTask.subtasks.splice(insertIndex, 0, task);
+              setExpandedTasks(prev => new Set(prev).add(parentId));
+              return true;
+            }
+            if (currentTask.subtasks && currentTask.subtasks.length > 0) {
+              if (findAndInsert(currentTask.subtasks)) return true;
+            }
+          }
+          return false;
+        };
+        findAndInsert(newTasks);
+      }
+      return newTasks;
+    });
+    setLastDeletedTaskInfo(null);
+    if (undoNotificationTimerRef.current) clearTimeout(undoNotificationTimerRef.current);
+    showNotification('↩️ タスクを元に戻しました！');
+    setSelectedTaskId(task.id);
+  }, [lastDeletedTaskInfo, setTasks, setExpandedTasks, showNotification, setSelectedTaskId]);
+
+  // タスクの編集を開始する関数
+  const startEditTask = useCallback((taskId) => {
+    setEditingTask(taskId);
+  }, [setEditingTask]);
+
+  // タスクの編集を終了する関数
+  const finishEditTask = useCallback((taskId) => {
+    const editInput = editInputRefs.current[taskId];
+    if (!editInput) return;
+    const newTitle = editInput.value.trim();
+    if (!newTitle) {
+      setEditingTask(null);
+      return;
+    }
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          return { ...task, title: newTitle };
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+    setTasks(prev => {
+      const updatedTasks = updateTaskRecursively(prev);
+      const oldTask = getAllTasksFlat().find(t => t.id === taskId);
+      if (oldTask && newTitle !== oldTask.title) {
+        generateEmojiForTask(taskId, newTitle);
+      }
+      return updatedTasks;
+    });
+    setEditingTask(null);
+    showNotification('✏️ 更新しました');
+  }, [setTasks, setEditingTask, showNotification, getAllTasksFlat, generateEmojiForTask]);
+
+  // タスクの展開/折りたたみを切り替える関数
+  const toggleExpanded = useCallback((taskId) => {
+    setExpandedTasks(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(taskId)) newSet.delete(taskId);
+      else newSet.add(taskId);
+      return newSet;
+    });
+  }, [setExpandedTasks]);
+
+  // 進捗状況を計算する関数
+  const calculateStats = useCallback(() => {
+    const getAll = (taskList) => {
+      let all = [];
+      taskList.forEach(task => {
+        all.push(task);
+        if (task.subtasks && task.subtasks.length > 0) {
+          all = all.concat(getAll(task.subtasks));
+        }
+      });
+      return all;
+    };
+    const allCurrentTasks = getAll(tasks);
+    const completed = allCurrentTasks.filter(t => t.completed).length;
+    const total = allCurrentTasks.length;
+    const progress = total > 0 ? (completed / total) * 100 : 0;
+    return { completed, total, progress, inProgress: total - completed };
+  }, [tasks]);
+
+
+  // openMemoModal 関数の定義
+  const openMemoModal = useCallback((task) => {
+    if (task && typeof task.id !== 'undefined') {
+      setShowMemoModal(task.id);
+      setCurrentMemo(task.memo || '');
+    } else {
+      console.error("openMemoModal: Invalid task object or task.id is undefined", task);
+      showNotification("メモを開けませんでした。タスク情報が不備です。");
+    }
+  }, [setShowMemoModal, setCurrentMemo, showNotification]);
+
+  // saveMemo 関数の定義
+  const saveMemo = useCallback((taskId, newMemo) => {
+    const updateTaskRecursively = (taskList) => {
+      return taskList.map(task => {
+        if (task.id === taskId) {
+          return { ...task, memo: newMemo };
+        }
+        if (task.subtasks && task.subtasks.length > 0) {
+          return { ...task, subtasks: updateTaskRecursively(task.subtasks) };
+        }
+        return task;
+      });
+    };
+    setTasks(prev => updateTaskRecursively(prev));
+    setShowMemoModal(null);
+    setCurrentMemo('');
+    showNotification('📝 メモを保存しました');
+  }, [setTasks, setShowMemoModal, setCurrentMemo, showNotification]);
+
+
+  // エクスポートドロップダウンの位置を計算するuseEffect
+  useEffect(() => {
+    const calculatePosition = () => {
+      if (showExportOptions && exportButtonRef.current) {
+        const rect = exportButtonRef.current.getBoundingClientRect();
+        setExportDropdownPosition({ top: rect.bottom + 8, left: rect.right });
+      }
+    };
+    calculatePosition();
+    window.addEventListener('resize', calculatePosition);
+    return () => window.removeEventListener('resize', calculatePosition);
+  }, [showExportOptions]);
+
+  // editingTaskが変更されたときに、対応する入力フィールドにフォーカスを当てるuseEffect
+  useEffect(() => {
+    if (editingTask) {
+      const taskBeingEdited = getAllTasksFlat().find(task => task.id === editingTask);
+      if (taskBeingEdited) {
+        const inputElement = editInputRefs.current[editingTask];
+        if (inputElement) {
+          inputElement.value = taskBeingEdited.title;
+          inputElement.focus();
+          inputElement.select();
+        } else {
+          const retryFocusTimeout = setTimeout(() => {
+            if (editingTaskRef.current === editingTask) {
+                setEditingTask(null);
+                setTimeout(()=> setEditingTask(editingTask),0);
+            }
+          }, 50);
+          return () => clearTimeout(retryFocusTimeout);
+        }
+      }
+    }
+  }, [editingTask, getAllTasksFlat]);
+
+  // グローバルなキーボードイベントリスナー
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      const isInInputField = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+      const isModalOpen = showColorPicker || showNewTaskColorPicker || showMemoModal || showExportOptions || showDeleteCompletedConfirmModal;
+
+
+      if (e.key === 'Escape') {
+        setShowColorPicker(null); setShowNewTaskColorPicker(false); setShowExportedData(false);
+        setShowExportOptions(false); setEditingTask(null); if (showAddForm) setShowAddForm(null);
+        setSelectedTaskId(null); setIsEmptyAreaSelected(false); setNotification('');
+        setLastDeletedTaskInfo(null); if (undoNotificationTimerRef.current) clearTimeout(undoNotificationTimerRef.current);
+        if (showMemoModal) { setShowMemoModal(null); setCurrentMemo(''); }
+        if (showDeleteCompletedConfirmModal) setShowDeleteCompletedConfirmModal(false);
+        return;
+      }
+
+      if (isModalOpen && e.key !== 'Escape') { // モーダル表示中はEscape以外のキー操作を制限（カラーピッカーの左右キーは例外）
+        if (showColorPicker && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Enter')) {
+            // カラーピッカー内の操作は許可
+        } else if (showMemoModal && e.ctrlKey && e.key === 'Enter') {
+            // メモモーダルでのCtrl+Enterは許可 (すでにtextareaのonKeyDownで処理されるため、ここでは何もしない)
+        }
+        else {
+            return;
+        }
+      }
+
+
+      if (e.key === 'Tab') {
+        if (editingTask || selectedTaskId) {
+          e.preventDefault();
+          const targetTaskId = editingTask || selectedTaskId;
+          if (e.shiftKey) moveTaskUp(targetTaskId);
+          else moveTaskDown(targetTaskId);
+          return;
+        }
+      }
+      if (e.shiftKey && e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        if (editingTask || selectedTaskId) {
+          e.preventDefault();
+          const targetTaskId = editingTask || selectedTaskId;
+          moveTaskVertically(targetTaskId, e.key === 'ArrowUp' ? 'up' : 'down');
+          return;
+        }
+      }
+      if (e.key === 'F2') {
+        if (selectedTaskId) {
+          e.preventDefault();
+          const taskToMemo = getAllTasksFlat().find(task => task.id === selectedTaskId);
+          if (taskToMemo) openMemoModal(taskToMemo);
+        }
+        return;
+      }
+
+      if (showColorPicker) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') setSelectedColorIndex(prev => prev > 0 ? prev - 1 : colors.length - 1);
+        else if (e.key === 'ArrowRight') setSelectedColorIndex(prev => prev < colors.length - 1 ? prev + 1 : 0);
+        else if (e.key === 'Enter') changeTaskColor(showColorPicker, colors[selectedColorIndex]);
+        return;
+      }
+
+      if (!isInInputField) {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          moveSelection(e.key === 'ArrowUp' ? 'up' : 'down');
+        }
+        if (e.ctrlKey && (e.key === 'u' || e.key === 'U')) {
+          e.preventDefault();
+          if (selectedTaskId) moveTaskToTop(selectedTaskId);
+          else showNotification('⚠️ まずタスクを選んでね！');
+          return;
+        }
+        // Ctrl+D でタスクを一番下に移動
+        if (e.ctrlKey && (e.key === 'd' || e.key === 'D')) {
+          e.preventDefault();
+          if (selectedTaskId) moveTaskToBottom(selectedTaskId);
+          else showNotification('⚠️ まずタスクを選んでね！');
+          return;
+        }
+        if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
+          e.preventDefault();
+          let newParentId = null, insertAfterId = null;
+          if (selectedTaskId) {
+            newParentId = findParentId(selectedTaskId, tasks);
+            insertAfterId = selectedTaskId;
+          }
+          const newTask = addTask(newParentId, '', null, insertAfterId, true);
+          if (newTask) startEditTask(newTask.id);
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+          e.preventDefault();
+          if (selectedTaskId) {
+              setShowAddForm(selectedTaskId);
+              setTimeout(() => {
+                const inputRef = subtaskInputRefs.current[selectedTaskId];
+                if (inputRef) inputRef.focus();
+              }, 100);
+          } else if (tasks.length === 0 || isEmptyAreaSelected) {
+            const newTask = addTask('root', '', null, null, true);
+            if (newTask) startEditTask(newTask.id);
+          }
+          return;
+        }
+        if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey) {
+            e.preventDefault();
+            const newTask = addTask('root', '', null, null, true);
+            if (newTask) startEditTask(newTask.id);
+            return;
+        }
+        if (e.key === 'Enter' && e.ctrlKey && !e.shiftKey) {
+            e.preventDefault();
+            if(selectedTaskId) toggleComplete(selectedTaskId);
+            return;
+        }
+        if (e.ctrlKey && (e.key === 'i' || e.key === 'I')) {
+          e.preventDefault();
+          if (!selectedTaskId && !isFocusMode) {
+            showNotification('⚠️ 集中モードにするには、まずタスクを選んでね！');
+            return;
+          }
+          setIsFocusMode(prev => !prev);
+          showNotification(!isFocusMode ? '🎯 集中モードになったよ！' : '👀 タスク確認モードに戻ったよ！');
+          return;
+        }
+        if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+          e.preventDefault();
+          if (selectedTaskId) {
+            const taskToColor = getAllTasksFlat().find(task => task.id === selectedTaskId);
+            if (taskToColor) {
+              const currentColorIndex = colors.findIndex(color => color === taskToColor.color);
+              setSelectedColorIndex(currentColorIndex !== -1 ? currentColorIndex : 0);
+              setShowColorPicker(selectedTaskId);
+            }
+          } else {
+            showNotification('⚠️ まずタスクを選んでね！');
+          }
+          return;
+        }
+        if (selectedTaskId) {
+          if (e.key === ' ') {
+            e.preventDefault();
+            const taskToEdit = getAllTasksFlat().find(task => task.id === selectedTaskId);
+            if (taskToEdit) startEditTask(taskToEdit.id);
+          } else if (e.key === 'Delete' || e.key === 'Backspace') {
+            e.preventDefault();
+            deleteTask(selectedTaskId);
+          }
+        }
+      }
+    };
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => document.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [
+    showAddForm, selectedTaskId, isEmptyAreaSelected, showColorPicker, selectedColorIndex, colors, tasks, expandedTasks,
+    isFocusMode, getAllTasksFlat, startEditTask, editingTask, showMemoModal, findParentId,
+    moveTaskUp, moveTaskDown, moveTaskVertically, openMemoModal, moveTaskToTop, moveTaskToBottom, // moveTaskToBottom を追加
+    showNotification, addTask, changeTaskColor, deleteTask, finishEditTask,
+    setShowColorPicker, setShowNewTaskColorPicker, setShowExportedData, setShowExportOptions,
+    setEditingTask, setShowAddForm, setSelectedTaskId, setIsEmptyAreaSelected, setNotification,
+    setShowMemoModal, setCurrentMemo, setSelectedColorIndex, toggleComplete, moveSelection,
+    setLastDeletedTaskInfo, exportInProgress, showDeleteCompletedConfirmModal
+  ]);
+
+  // LLMを使ってサブタスクを生成する関数
+  const generateSubtasksWithAI = async () => {
+    let taskTitleToBreakdown = '';
+    let parentTaskId = null;
+    let contextPath = '';
+
+    if (selectedTaskId) {
+      const selectedTask = getAllTasksFlat().find(task => task.id === selectedTaskId);
+      if (selectedTask) {
+        taskTitleToBreakdown = selectedTask.title;
+        parentTaskId = selectedTask.id;
+        contextPath = getTaskPath(selectedTaskId);
+      }
+    } else if (tasks.length > 0) {
+      const userInput = window.prompt("どのタスクを分解しますか？ (例: 誕生日パーティーの計画)");
+      if (!userInput) { showNotification('⚠️ タスクが入力されませんでした。'); return; }
+      taskTitleToBreakdown = userInput;
+      const newParentTask = addTask('root', taskTitleToBreakdown, colors[0], null, false);
+      if (newParentTask) {
+        parentTaskId = newParentTask.id;
+        setSelectedTaskId(newParentTask.id);
+        setExpandedTasks(prev => new Set([...prev, newParentTask.id]));
+        contextPath = newParentTask.title;
+      } else { showNotification('❌ 親タスクの追加に失敗しました。'); return; }
+    } else {
+      const userInput = window.prompt("新しいタスクを分解しますか？ (例: 誕生日パーティーの計画)");
+      if (!userInput) { showNotification('⚠️ タスクが入力されませんでした。'); return; }
+      taskTitleToBreakdown = userInput;
+      const newTask = addTask('root', taskTitleToBreakdown, colors[0], null, false);
+      if (newTask) {
+        parentTaskId = newTask.id;
+        setSelectedTaskId(newTask.id);
+        setExpandedTasks(prev => new Set([...prev, newTask.id]));
+        contextPath = newTask.title;
+      } else { showNotification('❌ タスクの追加に失敗しました。'); return; }
+    }
+
+    if (!taskTitleToBreakdown) { showNotification('⚠️ 分解するタスクがありません。'); return; }
+    if (!parentTaskId) { showNotification('⚠️ サブタスクを追加する親タスクが特定できませんでした。'); return; }
+
+    setIsGeneratingSubtasks(true);
+    showNotification('✨ サブタスクを生成中...');
+    try {
+      const promptText = `Given the task hierarchy: "${contextPath}", break down the task "${taskTitleToBreakdown}" into a list of actionable subtasks. Provide the response as a JSON array of strings, where each string is a subtask title. If the task is simple and doesn't require breakdown, return an empty array. Limit the number of subtasks to a maximum of 4.`;
+      let chatHistory = [{ role: "user", parts: [{ text: promptText }] }];
+      const payload = {
+        contents: chatHistory,
+        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { "type": "STRING" } } }
+      };
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+
+      if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
+        const jsonString = result.candidates[0].content.parts[0].text;
+        let subtasksFromAI = JSON.parse(jsonString);
+        if (subtasksFromAI && Array.isArray(subtasksFromAI)) {
+          if (subtasksFromAI.length > 4) {
+            subtasksFromAI = subtasksFromAI.slice(0, 4);
+            showNotification('ℹ️ 生成されたサブタスクが多すぎたため、最初の4つに制限しました。');
+          }
+        } else { subtasksFromAI = []; }
+
+        if (subtasksFromAI.length > 0) {
+          const addGeneratedSubtasks = (currentTasks, targetParentId) => {
+            return currentTasks.map(task => {
+              if (task.id === targetParentId) {
+                const newSubtasks = subtasksFromAI.map(subtaskTitle => ({
+                  id: generateId(), title: subtaskTitle, completed: false, color: '#22C55E',
+                  createdAt: new Date(), completedAt: null, subtasks: [], memo: '', emoji: ''
+                }));
+                newSubtasks.forEach(subtask => { if (subtask.title?.trim()) generateEmojiForTask(subtask.id, subtask.title); });
+                return { ...task, subtasks: [...(task.subtasks || []), ...newSubtasks] };
+              }
+              if (task.subtasks?.length > 0) return { ...task, subtasks: addGeneratedSubtasks(task.subtasks, targetParentId) };
+              return task;
+            });
+          };
+          setTasks(prev => addGeneratedSubtasks(prev, parentTaskId));
+          setExpandedTasks(prev => new Set([...prev, parentTaskId]));
+          showNotification('✅ サブタスクを生成しました！');
+        } else { showNotification('ℹ️ 分解するサブタスクはありませんでした。'); }
+      } else {
+        showNotification('❌ サブタスクの生成に失敗しました。APIからの応答が不正です。');
+        console.error("LLM API Error: Unexpected response structure", result);
+      }
+    } catch (error) {
+      console.error('LLM API Error:', error);
+      showNotification('❌ AIによるサブタスク生成中にエラーが発生しました。');
+    } finally {
+      setIsGeneratingSubtasks(false);
+    }
+  };
+
+  // LLMを使ってアイデアを生成する関数
+  const generateIdeasWithAI = async () => {
+    let ideaTopic = '';
+    let parentTaskIdForIdeas = null;
+    let contextPath = '';
+
+    if (selectedTaskId) {
+      const selectedTask = getAllTasksFlat().find(task => task.id === selectedTaskId);
+      if (selectedTask) {
+        ideaTopic = selectedTask.title;
+        parentTaskIdForIdeas = selectedTask.id;
+        contextPath = getTaskPath(selectedTaskId);
+      }
+    } else if (tasks.length > 0) {
+      const userInput = window.prompt("どんなテーマでアイデアを出しますか？ (例: 新しいプロジェクトのアイデア)");
+      if (!userInput) { showNotification('⚠️ テーマが入力されませんでした。'); return; }
+      ideaTopic = userInput;
+      const newParentTask = addTask('root', ideaTopic, colors[0], null, false);
+      if (newParentTask) {
+        parentTaskIdForIdeas = newParentTask.id;
+        setSelectedTaskId(newParentTask.id);
+        setExpandedTasks(prev => new Set([...prev, newParentTask.id]));
+        contextPath = newParentTask.title;
+      } else { showNotification('❌ 親タスクの追加に失敗しました。'); return; }
+    } else {
+      const userInput = window.prompt("新しいタスクについてアイデアを出しますか？ (例: 夏休みの計画)");
+      if (!userInput) { showNotification('⚠️ タスクが入力されませんでした。'); return; }
+      ideaTopic = userInput;
+      const newTask = addTask('root', ideaTopic, colors[0], null, false);
+      if (newTask) {
+        parentTaskIdForIdeas = newTask.id;
+        setSelectedTaskId(newTask.id);
+        setExpandedTasks(prev => new Set([...prev, newTask.id]));
+        contextPath = newTask.title;
+      } else { showNotification('❌ タスクの追加に失敗しました。'); return; }
+    }
+
+    if (!ideaTopic) { showNotification('⚠️ アイデアを生成するテーマがありません。'); return; }
+    if (!parentTaskIdForIdeas) { showNotification('⚠️ アイデアを追加する親タスクが特定できませんでした。'); return; }
+
+    setIsGeneratingIdeas(true);
+    showNotification('✨ アイデアを生成中...');
+    try {
+      const promptText = `Given the task hierarchy: "${contextPath}", 「${ideaTopic}」について、具体的で実行可能なアイデアを2つ日本語で生成して。回答はJSON形式の文字列配列で、各文字列がアイデア/タスクのタイトルになるようにしてね。各アイデアは簡潔で直接行動に移せるものにしてね。`;
+      let chatHistory = [{ role: "user", parts: [{ text: promptText }] }];
+      const payload = {
+        contents: chatHistory,
+        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { "type": "STRING" } } }
+      };
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+
+      if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
+        const jsonString = result.candidates[0].content.parts[0].text;
+        let ideasFromAI = JSON.parse(jsonString);
+        if (ideasFromAI && Array.isArray(ideasFromAI) && ideasFromAI.length > 0) {
+          if (ideasFromAI.length > 2) {
+            ideasFromAI = ideasFromAI.slice(0, 2);
+            showNotification('ℹ️ 生成されたアイデアが多すぎたため、最初の2つに制限しました。');
+          }
+          const addGeneratedIdeas = (currentTasks, targetParentId) => {
+            return currentTasks.map(task => {
+              if (task.id === targetParentId) {
+                const newIdeas = ideasFromAI.map(ideaTitle => ({
+                  id: generateId(), title: ideaTitle, completed: false, color: '#A78BFA',
+                  createdAt: new Date(), completedAt: null, subtasks: [], memo: '', emoji: ''
+                }));
+                newIdeas.forEach(idea => { if (idea.title?.trim()) generateEmojiForTask(idea.id, idea.title); });
+                return { ...task, subtasks: [...(task.subtasks || []), ...newIdeas] };
+              }
+              if (task.subtasks?.length > 0) return { ...task, subtasks: addGeneratedIdeas(task.subtasks, targetParentId) };
+              return task;
+            });
+          };
+          setTasks(prev => addGeneratedIdeas(prev, parentTaskIdForIdeas));
+          setExpandedTasks(prev => new Set([...prev, parentTaskIdForIdeas]));
+          showNotification('✅ アイデアを生成しました！');
+        } else { showNotification('ℹ️ アイデアは生成されませんでした。'); }
+      } else { showNotification('❌ アイデアの生成に失敗しました。'); }
+    } catch (error) {
+      console.error('LLM API Error:', error);
+      showNotification('❌ AIによるアイデア生成中にエラーが発生しました。');
+    } finally {
+      setIsGeneratingIdeas(false);
+    }
+  };
+
+  // LLMを使って問いを生成する関数
+  const generateQuestionsWithAI = async () => {
+    let questionTopic = '';
+    let parentTaskIdForQuestions = null;
+    let contextPath = '';
+
+    if (selectedTaskId) {
+      const selectedTask = getAllTasksFlat().find(task => task.id === selectedTaskId);
+      if (selectedTask) {
+        questionTopic = selectedTask.title;
+        parentTaskIdForQuestions = selectedTask.id;
+        contextPath = getTaskPath(selectedTaskId);
+      }
+    } else if (tasks.length > 0) {
+      const userInput = window.prompt("どのタスクについて問いを生成しますか？ (例: プロジェクトX)");
+      if (!userInput) { showNotification('⚠️ タスクが入力されませんでした。'); return; }
+      questionTopic = userInput;
+      const newParentTask = addTask('root', questionTopic, colors[0], null, false);
+      if (newParentTask) {
+        parentTaskIdForQuestions = newParentTask.id;
+        setSelectedTaskId(newParentTask.id);
+        setExpandedTasks(prev => new Set([...prev, newParentTask.id]));
+        contextPath = newParentTask.title;
+      } else { showNotification('❌ 親タスクの追加に失敗しました。'); return; }
+    } else {
+      const userInput = window.prompt("新しいタスクについて問いを生成しますか？ (例: 新規事業の立ち上げ)");
+      if (!userInput) { showNotification('⚠️ タスクが入力されませんでした。'); return; }
+      questionTopic = userInput;
+      const newTask = addTask('root', questionTopic, colors[0], null, false);
+      if (newTask) {
+        parentTaskIdForQuestions = newTask.id;
+        setSelectedTaskId(newTask.id);
+        setExpandedTasks(prev => new Set([...prev, newTask.id]));
+        contextPath = newTask.title;
+      } else { showNotification('❌ タスクの追加に失敗しました。'); return; }
+    }
+
+    if (!questionTopic) { showNotification('⚠️ 問いを生成するタスクがありません。'); return; }
+    if (!parentTaskIdForQuestions) { showNotification('⚠️ 問いを追加する親タスクが特定できませんでした。'); return; }
+
+    setIsGeneratingQuestions(true);
+    showNotification('✨ 問いを生成中...');
+    try {
+      const promptText = `Given the task hierarchy: "${contextPath}", 「${questionTopic}」というタスクをより具体的にするために、目的、予算、期限といった側面から、友だちのような口調で、洞察に満ちた具体的な質問を3つ日本語で提案してね。回答はJSON形式の文字列配列で、各文字列が質問になるようにしてね。`;
+      let chatHistory = [{ role: "user", parts: [{ text: promptText }] }];
+      const payload = {
+        contents: chatHistory,
+        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { "type": "STRING" } } }
+      };
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+
+      if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
+        const jsonString = result.candidates[0].content.parts[0].text;
+        const questionsFromAI = JSON.parse(jsonString);
+        if (questionsFromAI && Array.isArray(questionsFromAI) && questionsFromAI.length > 0) {
+          const addGeneratedQuestions = (currentTasks, targetParentId) => {
+            return currentTasks.map(task => {
+              if (task.id === targetParentId) {
+                const newQuestions = questionsFromAI.map(questionTitle => ({
+                  id: generateId(), title: questionTitle, completed: false, color: '#1F2937',
+                  createdAt: new Date(), completedAt: null, subtasks: [], memo: '', emoji: ''
+                }));
+                newQuestions.forEach(q => { if (q.title?.trim()) generateEmojiForTask(q.id, q.title); });
+                return { ...task, subtasks: [...(task.subtasks || []), ...newQuestions] };
+              }
+              if (task.subtasks?.length > 0) return { ...task, subtasks: addGeneratedQuestions(task.subtasks, targetParentId) };
+              return task;
+            });
+          };
+          setTasks(prev => addGeneratedQuestions(prev, parentTaskIdForQuestions));
+          setExpandedTasks(prev => new Set([...prev, parentTaskIdForQuestions]));
+          showNotification('✅ 問いをタスクとして追加しました！');
+        } else { showNotification('ℹ️ 問いは生成されませんでした。'); }
+      } else { showNotification('❌ 問いの生成に失敗しました。'); }
+    } catch (error) {
+      console.error('LLM API Error:', error);
+      showNotification('❌ AIによる問い生成中にエラーが発生しました。');
+    } finally {
+      setIsGeneratingQuestions(false);
+    }
+  };
+
+
+  // タスクカードコンポーネント
+  const TaskCard = ({ task, level = 0 }) => {
+    const isExpanded = expandedTasks.has(task.id);
+    const hasSubtasks = task.subtasks && task.subtasks.length > 0;
+    const isIdeaTask = task.color === '#A78BFA';
+    const isGeneratedSubtask = task.color === '#22C55E';
+    const isQuestionTask = task.color === '#1F2937';
+
+    return (
+      <div className="mb-2">
+        <div
+          className={`rounded-lg border-2 transition-all duration-200 cursor-pointer hover:scale-[1.01] group ${
+            task.completed ? 'opacity-60 ' : ''
+          } ${
+            selectedTaskId === task.id
+              ? 'ring-4 ring-blue-400 ring-offset-2 shadow-lg border-blue-400 '
+              : 'border-gray-200 hover:border-gray-300 hover:shadow-md '
+          } ${
+            isIdeaTask ? 'bg-gradient-to-r from-purple-300 to-purple-500 text-white' : ''
+          } ${
+            isQuestionTask ? 'bg-gradient-to-r from-gray-700 to-gray-900 text-white' : ''
+          }`}
+          style={{
+            marginLeft: `${level * 24}px`,
+            backgroundColor: (isIdeaTask || isQuestionTask) ? undefined : getTaskBackgroundColor(task.color, level),
+            borderLeftColor: level > 0 ? getTaskBorderColor(task.color, level) : undefined,
+            borderLeftWidth: level > 0 ? '4px' : undefined
+          }}
+          data-task-id={task.id}
+          onClick={() => {
+            setSelectedTaskId(selectedTaskId === task.id ? null : task.id);
+            setIsEmptyAreaSelected(false);
+          }}
+        >
+          <div className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3 flex-1">
+                <div className="flex items-center space-x-2">
+                  {hasSubtasks && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleExpanded(task.id); }}
+                      className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded hover:bg-gray-100"
+                    >
+                      {isExpanded ? <ChevronDown size={18} className="text-blue-600" /> : <ChevronRight size={18} />}
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleComplete(task.id); }}
+                    className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-200 hover:scale-110 ${
+                      task.completed ? 'bg-green-500 border-green-500 text-white shadow-md' : 'border-gray-300 hover:border-green-400 hover:bg-green-50'
+                    }`}
+                  >
+                    {task.completed && <Check size={14} />}
+                  </button>
+                </div>
+                <div className="flex items-center space-x-3 flex-1">
+                  <div className="relative">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowColorPicker(showColorPicker === task.id ? null : task.id); }}
+                      className="w-5 h-5 rounded-full border-2 border-white shadow-md hover:scale-125 transition-transform duration-200"
+                      style={{ backgroundColor: task.color }}
+                      title="色を変更"
+                    />
+                    {showColorPicker === task.id && (
+                      <>
+                        <div className="fixed inset-0 z-[9998] bg-black bg-opacity-30" onClick={() => setShowColorPicker(null)}></div>
+                        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[9999] bg-white rounded-xl shadow-2xl border-2 p-4 max-w-sm">
+                          <div className="flex items-center justify-between mb-3">
+                            <h3 className="text-base font-bold text-gray-800">色を選択</h3>
+                            <button onClick={() => setShowColorPicker(null)} className="text-gray-400 hover:text-gray-600 text-lg font-bold w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded-full transition-all">×</button>
+                          </div>
+                          <div className="flex space-x-3">
+                            {colors.map((color, index) => (
+                              <div key={color} className="relative">
+                                <button
+                                  onClick={() => changeTaskColor(task.id, color)}
+                                  className={`w-10 h-10 rounded-full border-2 hover:scale-110 transition-all duration-200 shadow-md hover:shadow-lg ${
+                                    task.color === color ? 'border-gray-800 ring-3 ring-gray-300 scale-105' :
+                                    selectedColorIndex === index ? 'border-blue-500 ring-2 ring-blue-300 scale-105' :
+                                    'border-white hover:border-gray-300'
+                                  }`}
+                                  style={{ backgroundColor: color }}
+                                  title={color === '#3B82F6' ? '青：標準タスク' : color === '#EF4444' ? '赤：重要・緊急' : color === '#FBBF24' ? '黄：緊急・保留' : color === '#22C55E' ? '緑：AI分解タスク' : color === '#A78BFA' ? '紫：AIアイデア' : '黒：AI問い生成'}
+                                />
+                                {selectedColorIndex === index && (
+                                  <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full flex items-center justify-center">
+                                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-2 text-center">← → で選択、Enter で決定</div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {editingTask === task.id ? (
+                    <input
+                      ref={(el) => { if (el) editInputRefs.current[task.id] = el; }}
+                      type="text"
+                      className="flex-1 font-medium text-gray-800 bg-white border-2 border-blue-400 rounded-lg px-3 py-2 focus:ring-4 focus:ring-blue-200 focus:border-blue-500 transition-all"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); finishEditTask(task.id); }
+                        else if (e.key === 'Escape') { e.preventDefault(); setEditingTask(null); }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <div className="flex items-center space-x-2 flex-1">
+                      {task.emoji && <span className="text-xl">{task.emoji}</span>}
+                      <span
+                        className={`font-medium cursor-pointer hover:text-blue-600 transition-colors select-none ${
+                          task.completed ? 'line-through text-gray-500' : isIdeaTask || isQuestionTask ? 'text-white' : 'text-gray-800'
+                        } ${isIdeaTask || isQuestionTask ? 'text-sm' : 'text-lg'}`}
+                        onDoubleClick={() => startEditTask(task.id)}
+                        onClick={(e) => { e.stopPropagation(); startEditTask(task.id); }}
+                        title="クリックまたはダブルクリックで編集"
+                      >
+                        {task.title}
+                        <div className="flex items-center space-x-2 mt-1">
+                          <span className={`text-xs font-normal ${isIdeaTask || isQuestionTask ? 'text-gray-200' : 'text-gray-400'}`}>
+                            作成: {task.createdAt ? formatDateTime(task.createdAt) : ''}
+                          </span>
+                          {task.completed && task.completedAt && (
+                            <>
+                              <span className="text-xs text-red-500 font-normal">完了: {formatDateTime(task.completedAt)}</span>
+                              <span className="text-xs text-blue-600 font-medium bg-blue-50 px-2 py-0.5 rounded-full">
+                                所要時間: {calculateTimeDifference(task.createdAt, task.completedAt)}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); openMemoModal(task); }}
+                className={`p-2 rounded-lg transition-all duration-200 ${
+                  task.memo
+                    ? 'text-purple-500 hover:bg-purple-50'
+                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-gray-100'
+                }`}
+                title={task.memo ? 'メモあり' : '詳細メモを追加'}
+              >
+                <FileText size={18} />
+              </button>
+              <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowAddForm(task.id); }}
+                  className="text-gray-400 hover:text-blue-500 p-2 rounded-lg hover:bg-blue-50 transition-all duration-200"
+                  title="サブタスク追加"
+                >
+                  <Plus size={18} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteTask(task.id); }}
+                  className="text-gray-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-all duration-200"
+                  title="削除"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        {hasSubtasks && isExpanded && (
+          <div className="mt-2 space-y-2">
+            {task.subtasks.map(subtask => (
+              <TaskCard key={subtask.id} task={subtask} level={level + 1} />
+            ))}
+          </div>
+        )}
+        {showAddForm === task.id && (
+          <div
+            className="border-2 rounded-xl p-4 mt-3 shadow-md"
+            style={{
+              marginLeft: `${(level + 1) * 24}px`,
+              backgroundColor: getTaskBackgroundColor(task.color, level + 1),
+              borderColor: getTaskBorderColor(task.color, level + 1)
+            }}
+          >
+            <div className="flex items-center space-x-3">
+              <input
+                ref={(el) => { if (el) subtaskInputRefs.current[task.id] = el; }}
+                type="text"
+                placeholder="サブタスクのタイトル（Enterで追加）"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTask(task.id, '', null, null, false); } }}
+                className="flex-1 px-4 py-3 border-2 border-blue-300 rounded-lg focus:ring-4 focus:ring-blue-200 focus:border-blue-500 text-base transition-all"
+                autoFocus
+              />
+              <button onClick={() => addTask(task.id, '', null, null, false)} className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 shadow-md">追加</button>
+              <button onClick={() => setShowAddForm(null)} className="px-3 py-3 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-all">✕</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const currentStats = calculateStats();
+
+  return (
+    <div className={`min-h-screen transition-all duration-500 ${isFocusMode ? 'bg-gradient-to-br from-red-300 via-red-500 to-red-700' : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50'}`}>
+      {notification && (
+        <div className="fixed top-4 right-4 bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-3 rounded-xl shadow-xl z-50">
+          <div className="flex items-center space-x-2">
+            <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+            <span className="font-medium">{notification}</span>
+            {lastDeletedTaskInfo && (
+              <button
+                onClick={(e) => { e.stopPropagation(); undoDelete(); }}
+                className="ml-4 px-3 py-1 bg-white text-green-600 rounded-lg font-semibold hover:bg-green-100 transition-colors"
+              >
+                元に戻す
+              </button>
+            )}
+            <button onClick={() => {
+              setNotification('');
+              if (undoNotificationTimerRef.current) {
+                clearTimeout(undoNotificationTimerRef.current);
+                undoNotificationTimerRef.current = null;
+              }
+              setLastDeletedTaskInfo(null);
+            }} className="ml-2 text-white hover:text-gray-200 text-lg font-bold w-6 h-6 flex items-center justify-center rounded-full transition-all" title="閉じる">✕</button>
+          </div>
+        </div>
+      )}
+      <header className="bg-white/80 backdrop-blur-md shadow-lg border-b border-gray-200 sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-6 py-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl"><Target className="text-white" size={28} /></div>
+              <div><h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">TODO Manager</h1></div>
+            </div>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => {
+                  const newTask = addTask('root', '', newTaskColor, null, true); // isFromShortcut = true
+                  if (newTask) startEditTask(newTask.id);
+                }}
+                className="flex items-center space-x-3 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-md text-sm"
+              >
+                <Plus size={18} /><span>新しいタスク</span>
+              </button>
+              <button onClick={generateSubtasksWithAI} className={`flex items-center space-x-3 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-md text-sm ${isGeneratingSubtasks ? 'opacity-60 cursor-not-allowed' : ''}`} disabled={isGeneratingSubtasks} title="AIがタスクをサブタスクに分解します">
+                <Lightbulb size={18} /><span>{isGeneratingSubtasks ? '生成中...' : '分解'}</span>
+              </button>
+              <button onClick={generateIdeasWithAI} className={`flex items-center space-x-3 px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 text-white rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-md text-sm ${isGeneratingIdeas ? 'opacity-60 cursor-not-allowed' : ''}`} disabled={isGeneratingIdeas} title="AIが新しいアイデアを生成します">
+                <Lightbulb size={18} /><span>{isGeneratingIdeas ? '生成中...' : 'アイデア出し'}</span>
+              </button>
+              <button onClick={generateQuestionsWithAI} className={`flex items-center space-x-3 px-4 py-2 bg-gradient-to-r from-gray-800 to-black text-white rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-md text-sm ${isGeneratingQuestions ? 'opacity-60 cursor-not-allowed' : ''}`} disabled={isGeneratingQuestions} title="AIがタスクを磨くための問いを生成します">
+                <HelpCircle size={18} /><span>{isGeneratingQuestions ? '生成中...' : '問い生成'}</span>
+              </button>
+              <button onClick={() => { if (selectedTaskId) moveTaskToTop(selectedTaskId); else showNotification('⚠️ まずタスクを選んでね！'); }} className={`flex items-center space-x-3 px-4 py-2 text-sm text-white bg-gradient-to-r from-blue-400 to-cyan-500 rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-md ${!selectedTaskId ? 'opacity-60 cursor-not-allowed' : ''}`} disabled={!selectedTaskId} title="選択したタスクを一番上に移動 (Ctrl+U)">
+                <ArrowUp size={18} /><span>一番上に</span>
+              </button>
+              <button onClick={() => { if (!selectedTaskId && !isFocusMode) { showNotification('⚠️ 集中モードにするには、まずタスクを選んでね！'); return; } setIsFocusMode(prev => !prev); showNotification(!isFocusMode ? '🎯 集中モードになったよ！' : '👀 タスク確認モードに戻ったよ！'); }} className={`flex items-center space-x-2 px-4 py-2 text-sm rounded-xl font-medium transition-all duration-200 hover:scale-105 transform shadow-md ${isFocusMode ? 'bg-gradient-to-r from-orange-400 to-yellow-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`} title={isFocusMode ? '集中モードを解除' : '選択したタスクに集中'}>
+                {isFocusMode ? (<><HelpCircle size={18} /><span>確認モードに戻る</span></>) : (<><Target size={18} /><span>集中モードにする</span></>)}
+              </button>
+              <button onClick={() => setShowImportArea(!showImportArea)} className="flex items-center space-x-2 px-4 py-2 text-sm text-gray-600 hover:text-blue-600 transition-all rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-300">
+                <Upload size={18} /><span>インポート</span>
+              </button>
+              <div className="relative">
+                <button ref={exportButtonRef} onClick={() => setShowExportOptions(!showExportOptions)} className="flex items-center space-x-2 px-4 py-2 text-sm text-gray-600 hover:text-blue-600 transition-all rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-300">
+                  <Download size={18} /><span>エクスポート</span>
+                </button>
+              </div>
+              <button onClick={() => { setTasks([]); setExpandedTasks(new Set()); setSelectedTaskId(null); setIsEmptyAreaSelected(false); setShowAddForm(null); showNotification('🧹 すべてのタスクを削除しました'); localStorage.removeItem('todoAppTasks_v2'); localStorage.removeItem('todoAppExpandedTasks_v2'); }} className="flex items-center space-x-2 px-4 py-2 text-sm text-white bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 rounded-lg transition-all duration-200 hover:scale-105 transform shadow-md">
+                <Trash2 size={18} /><span>全削除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+      <div className="max-w-7xl mx-auto px-6 py-8 flex gap-8">
+        <div className="flex-1">
+          {showImportArea && (
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-6 mb-8 shadow-md">
+              <h3 className="font-bold text-blue-800 mb-3 text-lg">📥 データをインポート</h3>
+              <div className="space-y-4">
+                <div className="text-sm text-blue-700 bg-blue-100 rounded-lg p-3">
+                  <div className="font-medium mb-2">💡 対応形式:</div>
+                  <div className="space-y-1 text-xs">
+                    <div><strong>JSON形式:</strong> エクスポートしたJSONデータ</div>
+                    <div><strong>テキスト形式:</strong> 1行1タスク、子タスクは「　└」で開始 (インデントで階層化)</div>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-4">
+                  <span className="text-sm font-medium text-gray-700">モード:</span>
+                  <label className="inline-flex items-center"><input type="radio" className="form-radio text-blue-600" name="importMode" value="add" checked={importMode === 'add'} onChange={() => setImportMode('add')} /><span className="ml-2 text-gray-700">追加</span></label>
+                  <label className="inline-flex items-center"><input type="radio" className="form-radio text-blue-600" name="importMode" value="overwrite" checked={importMode === 'overwrite'} onChange={() => setImportMode('overwrite')} /><span className="ml-2 text-gray-700">上書き</span></label>
+                </div>
+                <textarea placeholder="JSONデータまたはテキストを貼り付けてください..." className="w-full px-4 py-3 border-2 border-blue-300 rounded-lg resize-none focus:ring-4 focus:ring-blue-200 focus:border-blue-500 text-base transition-all" rows="6" id="import-textarea"></textarea>
+                <button onClick={() => { const textareaElement = document.getElementById('import-textarea'); if (textareaElement && textareaElement.value.trim()) { importData(textareaElement.value); textareaElement.value = ''; setShowImportArea(false); } else { showNotification('⚠️ インポートするデータがありません。'); } }} className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 shadow-md">インポート実行</button>
+              </div>
+            </div>
+          )}
+          {showExportedData && (
+            <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-6 mb-8 shadow-md">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-green-800 text-lg">📤 エクスポートしたデータ</h3>
+                <button onClick={() => setShowExportedData(false)} className="text-green-600 hover:text-green-800 hover:bg-green-100 rounded-lg p-2 transition-all" title="閉じる">✕</button>
+              </div>
+              <div className="bg-white border border-green-300 rounded-lg p-4 max-h-96 overflow-y-auto"><pre className="text-sm text-gray-800 whitespace-pre-wrap font-mono">{exportedData}</pre></div>
+              <div className="mt-3 flex items-center space-x-2 text-sm text-green-700"><span>📋 クリップボードにもコピーされました</span></div>
+            </div>
+          )}
+          {showAddForm === 'root' && (
+            <div className="bg-white rounded-xl shadow-lg border-2 border-gray-200 p-6 mb-8">
+              <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center"><Plus className="mr-2 text-blue-600" size={20} />新しいタスク</h3>
+              <div className="space-y-4">
+                <div className="flex items-center space-x-3">
+                  <span className="text-sm font-medium text-gray-700">色:</span>
+                  <div className="relative">
+                    <button onClick={() => setShowNewTaskColorPicker(!showNewTaskColorPicker)} className="w-8 h-8 rounded-full border-2 border-white shadow-md hover:scale-110 transition-transform duration-200" style={{ backgroundColor: newTaskColor }} title="色を選択" />
+                    {showNewTaskColorPicker && (
+                      <>
+                        <div className="fixed inset-0 z-[9998] bg-black bg-opacity-30" onClick={() => setShowNewTaskColorPicker(false)}></div>
+                        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[9999] bg-white rounded-xl shadow-2xl border-2 p-4 max-w-sm">
+                          <div className="flex items-center justify-between mb-3"><h3 className="text-base font-bold text-gray-800">色を選択</h3><button onClick={() => setShowNewTaskColorPicker(false)} className="text-gray-400 hover:text-gray-600 text-lg font-bold w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded-full transition-all">×</button></div>
+                          <div className="flex space-x-3">
+                            {colors.map(color => (<button key={color} onClick={() => { setNewTaskColor(color); setShowNewTaskColorPicker(false); }} className={`w-10 h-10 rounded-full border-2 hover:scale-110 transition-all duration-200 shadow-md hover:shadow-lg ${newTaskColor === color ? 'border-gray-800 ring-3 ring-gray-300 scale-105' : 'border-white hover:border-gray-300'}`} style={{ backgroundColor: color }} title={color === '#3B82F6' ? '青：標準タスク' : color === '#EF4444' ? '赤：重要・緊急' : color === '#FBBF24' ? '黄：緊急・保留' : color === '#22C55E' ? '緑：AI分解タスク' : color === '#A78BFA' ? '紫：AIアイデア' : '黒：AI問い生成'} />))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center space-x-4">
+                  <input ref={mainInputRef} type="text" placeholder="タスクのタイトル（Enterで追加）" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTask('root', mainInputRef.current?.value || '', newTaskColor, null, false); } }} className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-4 focus:ring-blue-200 focus:focus:border-blue-500 text-base transition-all" autoFocus />
+                  <button onClick={() => addTask('root', mainInputRef.current?.value || '', newTaskColor, null, false)} className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 shadow-md">追加</button>
+                  <button onClick={() => { setShowAddForm(null); setShowNewTaskColorPicker(false); }} className="px-4 py-3 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-all">キャンセル</button>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="space-y-3">
+            {tasks.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="p-4 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center"><Target size={40} className="text-white" /></div>
+                <h3 className="text-xl font-semibold text-gray-700 mb-2">まだタスクがありません</h3>
+                <p className="text-gray-500">上のボタンから新しいタスクを追加してください</p>
+              </div>
+            ) : (
+              <>
+                {getFilteredTasksForFocusMode().map(task => (<TaskCard key={task.id} task={task} />))}
+                <div data-empty-area="true" className={`h-12 rounded-xl border-2 border-dashed transition-all cursor-pointer hover:scale-[1.01] ${isEmptyAreaSelected ? 'border-blue-500 bg-blue-50 shadow-md' : 'border-gray-300 hover:border-gray-400 hover:bg-gray-50'}`} onClick={() => { setIsEmptyAreaSelected(!isEmptyAreaSelected); setSelectedTaskId(null); }} title="空のエリア（選択してEnterで新規タスク追加）">
+                  <div className="flex items-center justify-center h-full">{isEmptyAreaSelected ? (<div className="text-sm text-blue-600 font-medium">✨ Enterで新規タスク追加</div>) : (<div className="text-sm text-gray-400">クリックして選択</div>)}</div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="w-80 space-y-6">
+          <div className="bg-white/80 backdrop-blur-md rounded-xl shadow-lg border border-gray-200 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center"><BarChart3 className="mr-2 text-blue-600" size={20} />進捗状況</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-sm"><span className="text-gray-600">完了済み</span><span className="font-bold text-green-600">{currentStats.completed}</span></div>
+              <div className="flex items-center justify-between text-sm"><span className="text-gray-600">進行中</span><span className="font-bold text-blue-600">{currentStats.inProgress}</span></div>
+              <div className="flex items-center justify-between text-sm"><span className="text-gray-600">合計</span><span className="font-bold text-gray-800">{currentStats.total}</span></div>
+              <div className="mt-4">
+                <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden"><div className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-500 ease-out" style={{ width: `${currentStats.progress}%` }}></div></div>
+              </div>
+               <button
+                onClick={handleDeleteCompletedTasks}
+                className="mt-4 w-full flex items-center justify-center space-x-2 px-4 py-2 text-sm text-red-600 hover:text-white bg-red-100 hover:bg-red-600 transition-all rounded-lg border border-red-300 hover:border-red-600 shadow-sm"
+                title="完了済みのタスクをすべて削除します"
+              >
+                <Trash2 size={16} />
+                <span>完了済みのタスク削除</span>
+              </button>
+            </div>
+          </div>
+          <div className="bg-white/80 backdrop-blur-md rounded-xl shadow-lg border border-gray-200 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">⌨️ ショートカット</h3>
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between"><span className="text-gray-600">↑ ↓</span><span className="text-gray-800">タスク選択</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Enter</span><span className="text-gray-800">サブタスク追加</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Ctrl+Enter</span><span className="text-gray-800">完了切替</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Ctrl+Shift+Enter</span><span className="text-gray-800">同階層タスク追加</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Space</span><span className="text-gray-800">編集開始</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Tab</span><span className="text-gray-800">階層下げ</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Shift+Tab</span><span className="text-gray-800">階層上げ</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Shift+Alt+↑↓</span><span className="text-gray-800">順序変更 (循環)</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Ctrl+C</span><span className="text-gray-800">色選択</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Delete</span><span className="text-gray-800">削除</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Esc</span><span className="text-gray-800">キャンセル</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">F2</span><span className="text-gray-800">メモを開く</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Ctrl+U</span><span className="text-gray-800">一番上に移動</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Ctrl+D</span><span className="text-gray-800">一番下に移動</span></div> {/* Added Ctrl+D shortcut */}
+              <div className="flex justify-between"><span className="text-gray-600">Ctrl+I</span><span className="text-gray-800">集中モード切替</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Shift+Enter</span><span className="text-gray-800">親タスク追加 (即時編集)</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">Enter (タスクなし時)</span><span className="text-gray-800">親タスク追加 (即時編集)</span></div>
+              <div className="flex justify-between"><span className="text-gray-600">メモ編集時 Ctrl+Enter</span><span className="text-gray-800">保存</span></div>
+            </div>
+          </div>
+          <div className="bg-white/80 backdrop-blur-md rounded-xl shadow-lg border border-gray-200 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">🎨 色分けガイド</h3>
+            <div className="space-y-3">
+              {colors.map((color) => (
+                <div key={color} className="flex items-center space-x-3">
+                  <div className="w-4 h-4 rounded-full border border-gray-300" style={{ backgroundColor: color }}></div>
+                  <span className="text-sm text-gray-700">
+                    {color === '#3B82F6' ? '標準タスク' : color === '#EF4444' ? '重要・緊急' : color === '#FBBF24' ? '注意・保留' : color === '#22C55E' ? 'AI分解タスク' : color === '#A78BFA' ? 'AIアイデア' : 'AI問い生成'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      {showMemoModal && (
+        <>
+          <div className="fixed inset-0 z-[9998] bg-black bg-opacity-50 flex items-center justify-center p-4" onClick={() => { setShowMemoModal(null); setCurrentMemo(''); }}>
+            <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-lg relative" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-xl font-bold text-gray-800 mb-4">📝 メモを編集</h3>
+              <textarea
+                className="w-full h-48 p-3 border-2 border-gray-300 rounded-lg focus:ring-4 focus:ring-blue-200 focus:border-blue-500 text-base resize-none"
+                value={currentMemo}
+                onChange={(e) => setCurrentMemo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.ctrlKey && e.key === 'Enter') {
+                    e.preventDefault(); // 改行を防ぐ
+                    if (showMemoModal) saveMemo(showMemoModal, currentMemo);
+                  }
+                }}
+                placeholder="ここにメモを入力してください..."
+                autoFocus
+              />
+              <div className="flex justify-end space-x-3 mt-4">
+                <button onClick={() => { if (showMemoModal) saveMemo(showMemoModal, currentMemo); }} className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 shadow-md">保存</button>
+                <button onClick={() => { setShowMemoModal(null); setCurrentMemo(''); }} className="px-6 py-3 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-all">キャンセル</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+      {showExportOptions && (
+        <>
+          <div className="fixed inset-0 z-[9998] bg-black bg-opacity-30" onClick={() => setShowExportOptions(false)}></div>
+          <div className="fixed z-[9999] bg-white rounded-xl shadow-xl border-2 p-3 min-w-48" style={{ top: exportDropdownPosition.top, left: exportDropdownPosition.left, transform: 'translateX(-100%)' }}>
+            <h3 className="text-sm font-bold text-gray-800 mb-2">エクスポート形式</h3>
+            <div className="space-y-2">
+              <button onClick={() => exportData('json')} className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 rounded-lg transition-all"><div className="font-medium">📄 JSON形式</div></button>
+              <button onClick={() => exportData('text')} className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-green-50 hover:text-green-600 rounded-lg transition-all"><div className="font-medium">📝 テキスト形式</div></button>
+            </div>
+          </div>
+        </>
+      )}
+      {showDeleteCompletedConfirmModal && (
+        <div className="fixed inset-0 z-[10000] bg-black bg-opacity-60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md relative transform transition-all scale-100 opacity-100">
+            <div className="flex items-start">
+              <div className="mr-4 flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:h-10 sm:w-10">
+                <AlertTriangle className="h-6 w-6 text-red-600" aria-hidden="true" />
+              </div>
+              <div className="mt-0 text-left">
+                <h3 className="text-lg leading-6 font-bold text-gray-900">
+                  完了済みタスクの削除
+                </h3>
+                <div className="mt-2">
+                  <p className="text-sm text-gray-600">
+                    本当にすべての完了済みタスクを削除しますか？この操作は元に戻すことができません。
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="mt-6 sm:mt-8 sm:flex sm:flex-row-reverse">
+              <button
+                type="button"
+                className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm transition-colors"
+                onClick={executeDeleteCompletedTasks}
+              >
+                はい、削除します
+              </button>
+              <button
+                type="button"
+                className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:w-auto sm:text-sm transition-colors"
+                onClick={() => setShowDeleteCompletedConfirmModal(false)}
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
